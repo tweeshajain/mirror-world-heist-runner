@@ -7,8 +7,8 @@ const CHUNK_LENGTH = 18;
 const PLAYER_Z = 0;
 const SPAWN_AHEAD = 82;
 const DESPAWN_BEHIND = 38;
-/** Minimum advance of `nextObstacleAt` so hazards never stack tighter than reaction + lane move time. */
-const MIN_OBSTACLE_STEP = 9.75;
+/** Minimum advance of `nextObstacleAt` — keeps gaps readable at high speed. */
+const MIN_OBSTACLE_STEP = 14;
 /** In spawn-distance space: blocks closer than this cannot occupy all three lanes (no unavoidable wall). */
 const BLOCK_CLUSTER_D = 9.5;
 /** Each time floor(score / this) increases, run speed bumps (target + max cap). */
@@ -95,7 +95,7 @@ export class Game {
 
   private chunks: RoadChunk[] = [];
   private obstacles: Obstacle[] = [];
-  private nextObstacleAt = 18;
+  private nextObstacleAt = 26;
 
   private invertLR = false;
   private swapJumpSlide = false;
@@ -335,7 +335,7 @@ export class Game {
     this.obstacles.length = 0;
     for (const c of this.chunks) this.worldGroup.remove(c.group);
     this.chunks.length = 0;
-    this.nextObstacleAt = 18;
+    this.nextObstacleAt = 26;
     this.seedWorld();
     this.applyVisualLayer(false);
   }
@@ -1545,7 +1545,7 @@ export class Game {
 
         const spacing = Math.max(
           MIN_OBSTACLE_STEP,
-          THREE.MathUtils.lerp(11.2, 4.85, Math.min(1, this.aliveTime / 88)) + randRange(-1.2, 2.2),
+          THREE.MathUtils.lerp(16.5, 9.25, Math.min(1, this.aliveTime / 100)) + randRange(-0.7, 1.5),
         );
         if (this.distance >= this.nextObstacleAt) {
           this.spawnObstacle();
