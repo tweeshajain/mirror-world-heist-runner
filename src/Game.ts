@@ -21,6 +21,8 @@ const MAX_SPEED_MILESTONES = 14;
 const MIRROR_CYCLE_MS = 15000;
 const MIRROR_WARN_MS = 1000;
 const STARTING_LIVES = 3;
+/** After Mirror Reality fires, obstacle hits do not cost lives (ms). */
+const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -126,6 +128,8 @@ export class Game {
 
   private touchStart: { x: number; y: number; t: number } | null = null;
   private lifeLostBannerUntil = 0;
+  /** `performance.now()` until which obstacle hits do not cost lives (Mirror protocol grace). */
+  private mirrorProtocolImmunityUntil = 0;
 
   private running = false;
   private gameOver = false;
@@ -316,6 +320,7 @@ export class Game {
     this.stumbleCooldown = 0;
     this.lives = STARTING_LIVES;
     this.lifeLostBannerUntil = 0;
+    this.mirrorProtocolImmunityUntil = 0;
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -455,6 +460,7 @@ export class Game {
       this.applyFullMirrorShift();
     }
 
+    this.mirrorProtocolImmunityUntil = performance.now() + MIRROR_PROTOCOL_IMMUNITY_MS;
     this.scheduleMirrorRealityCycle(performance.now());
   }
 
@@ -1418,6 +1424,9 @@ export class Game {
   private collideFail(o: Obstacle): void {
     if (o.hit) return;
     o.hit = true;
+    if (performance.now() < this.mirrorProtocolImmunityUntil) {
+      return;
+    }
     this.lives -= 1;
     this.stumble();
     if (this.lives > 0) {
@@ -1612,6 +1621,7 @@ export class Game {
     this.vfxStumblePulseUntil = 0;
     this.nearMissFlashUntil = 0;
     this.lifeLostBannerUntil = 0;
+    this.mirrorProtocolImmunityUntil = 0;
     this.mirrorCamRoll = 0;
     this.mirrorLayer = false;
     this.mirrorPhysicsFlip = false;
