@@ -987,50 +987,6 @@ export class Game {
     parent.add(back);
   }
 
-  private addElevatedHighway(parent: THREE.Group, seed: number): void {
-    const deckW = LANE_WIDTH * 4.4;
-    const deckD = CHUNK_LENGTH * 0.82;
-    const deckMat = new THREE.MeshStandardMaterial({
-      color: 0x060810,
-      metalness: 0.88,
-      roughness: 0.32,
-      emissive: 0x081018,
-      emissiveIntensity: 0.18,
-    });
-    const deck = new THREE.Mesh(new THREE.BoxGeometry(deckW, 0.14, deckD), deckMat);
-    deck.position.set(0, 4.35 + (seed % 3) * 0.06, 0);
-    deck.castShadow = true;
-    deck.receiveShadow = true;
-    parent.add(deck);
-
-    const railMat = new THREE.MeshStandardMaterial({
-      color: 0x010204,
-      emissive: 0x00f5ff,
-      emissiveIntensity: 0.65,
-      metalness: 0.7,
-      roughness: 0.22,
-    });
-    for (const sx of [-1, 1]) {
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.22, deckD * 0.98), railMat);
-      rail.position.set(sx * deckW * 0.48, deck.position.y + 0.16, 0);
-      rail.userData.neon = true;
-      parent.add(rail);
-    }
-
-    for (let i = -1; i <= 1; i += 2) {
-      const col = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.16, 0.2, deck.position.y - 0.1, 8),
-        deckMat,
-      );
-      col.position.set(i * deckW * 0.42, (deck.position.y - 0.1) * 0.5, deckD * 0.38);
-      col.castShadow = true;
-      parent.add(col);
-      const col2 = col.clone();
-      col2.position.z = -deckD * 0.38;
-      parent.add(col2);
-    }
-  }
-
   private addBridgeSpan(parent: THREE.Group, _zCenter: number, seed: number): void {
     if (seed % 2 === 0) return;
     const bridge = new THREE.Group();
@@ -1153,7 +1109,6 @@ export class Game {
       group.add(line);
     }
 
-    this.addElevatedHighway(group, seed);
     this.addBridgeSpan(group, zCenter, seed);
 
     const sideZ = CHUNK_LENGTH * 0.42;
