@@ -14,6 +14,7 @@
       <div id="hud">
         <div id="score-row">
           <span id="score">0</span>
+          <span id="lives" class="lives-hud" aria-label="Lives remaining">♥ ♥ ♥</span>
           <span id="layer-badge" class="layer-real">REAL</span>
         </div>
         <div id="chase-bar-wrap">
@@ -23,19 +24,19 @@
         <div id="mirror-warn-bar" aria-hidden="true"></div>
         <div id="mirror-hint" aria-live="polite"></div>
         <p id="quick-tip">
-          <strong>Run</strong> forward · <strong>lanes</strong> dodge · <strong>jump / slide</strong> hazards ·
+          <strong>3 lives</strong> — each hit costs one (big warning on screen) · <strong>←→↑↓</strong> or WASD ·
           <strong>Mirror</strong> flips controls every 15s (watch the 1s cue).
         </p>
       </div>
       <div id="start-screen">
         <h1>Mirror World Heist Runner</h1>
         <p class="tagline">
-          <strong>3 seconds:</strong> you run, dodge three lanes, jump or slide obstacles, and survive while
-          <strong>Mirror Reality</strong> randomly flips controls — telegraphed 1s before it hits.
+          <strong>3 lives:</strong> each obstacle you fail to dodge costs one. You run three lanes, jump or slide hazards,
+          and survive while <strong>Mirror Reality</strong> flips controls — telegraphed 1s before it hits.
         </p>
         <ul class="controls">
-          <li><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> <kbd>→</kbd> — lanes</li>
-          <li><kbd>W</kbd> / <kbd>Space</kbd> — jump · <kbd>S</kbd> — slide</li>
+          <li><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> / <kbd>→</kbd> — lanes (tap each lane change)</li>
+          <li><kbd>W</kbd> / <kbd>Space</kbd> / <kbd>↑</kbd> — jump · <kbd>S</kbd> / <kbd>↓</kbd> — slide</li>
           <li>Mobile: swipe <strong>up</strong> jump · <strong>down</strong> slide ·
             <strong>left/right</strong> lanes</li>
         </ul>
@@ -48,6 +49,7 @@
         <button id="btn-retry" type="button">Retry</button>
       </div>
     </div>
+    <div id="life-lost-banner" class="life-lost-banner" hidden role="status" aria-live="assertive"></div>
     <div
       id="system-error-overlay"
       class="system-error-overlay"
@@ -66,7 +68,7 @@
         <p class="syserr-foot">DO NOT TRUST MUSCLE MEMORY · AWAIT REM</p>
       </div>
     </div>
-    <div id="c-wrap" aria-hidden="true">
+    <div id="c-wrap" aria-hidden="true" tabindex="-1">
       <canvas id="c"></canvas>
     </div>
     <script type="module" src="/src/main.ts"></script>

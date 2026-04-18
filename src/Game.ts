@@ -7,10 +7,20 @@ const CHUNK_LENGTH = 18;
 const PLAYER_Z = 0;
 const SPAWN_AHEAD = 82;
 const DESPAWN_BEHIND = 38;
+/** Minimum advance of `nextObstacleAt` so hazards never stack tighter than reaction + lane move time. */
+const MIN_OBSTACLE_STEP = 9.75;
+/** In spawn-distance space: blocks closer than this cannot occupy all three lanes (no unavoidable wall). */
+const BLOCK_CLUSTER_D = 9.5;
+/** Each time floor(score / this) increases, run speed bumps (target + max cap). */
+const SCORE_SPEED_MILESTONE = 2000;
+const SPEED_BONUS_PER_MILESTONE = 2.35;
+const VMAX_BONUS_PER_MILESTONE = 1.35;
+const MAX_SPEED_MILESTONES = 14;
 
 /** Mirror Reality System: fixed cadence + telegraph (see `MIRROR_*`). */
 const MIRROR_CYCLE_MS = 15000;
 const MIRROR_WARN_MS = 1000;
+const STARTING_LIVES = 3;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -33,6 +43,16 @@ interface RoadChunk {
 
 function randRange(a: number, b: number): number {
   return a + Math.random() * (b - a);
+}
+
+function laneToGridIndex(lane: number): 0 | 1 | 2 {
+  if (lane === -1) return 0;
+  if (lane === 0) return 1;
+  return 2;
+}
+
+function gridIndexToLane(i: 0 | 1 | 2): (typeof LANES)[number] {
+  return LANES[i];
 }
 
 export class Game {
@@ -102,9 +122,10 @@ export class Game {
 
   private chase = 0;
   private stumbleCooldown = 0;
+  private lives = STARTING_LIVES;
 
-  private keys = new Set<string>();
   private touchStart: { x: number; y: number; t: number } | null = null;
+  private lifeLostBannerUntil = 0;
 
   private running = false;
   private gameOver = false;
@@ -112,6 +133,9 @@ export class Game {
 
   private clock = new THREE.Clock();
   private resizeBound = () => this.onResize();
+  private keyDownBound = (e: KeyboardEvent) => this.onGlobalKeyDown(e);
+  /** Must match between add/removeEventListener for the capture listener. */
+  private readonly keyListenerOpts: AddEventListenerOptions = { capture: true };
 
   private ambient: THREE.AmbientLight;
   private dirLight: THREE.DirectionalLight;
@@ -171,11 +195,7 @@ export class Game {
     this.resetSession();
 
     window.addEventListener("resize", this.resizeBound);
-    window.addEventListener("keydown", (e) => {
-      e.preventDefault();
-      this.keys.add(e.code);
-    });
-    window.addEventListener("keyup", (e) => this.keys.delete(e.code));
+    window.addEventListener("keydown", this.keyDownBound, this.keyListenerOpts);
 
     canvas.addEventListener(
       "touchstart",
@@ -227,6 +247,18 @@ export class Game {
     return Math.floor(this.score);
   }
 
+  getLives(): number {
+    return this.lives;
+  }
+
+  /** Non-null while a “life lost” message should show after a hit (not on final death). */
+  getLifeLostBannerText(): string | null {
+    if (!this.isRunning()) return null;
+    if (performance.now() >= this.lifeLostBannerUntil) return null;
+    const n = this.lives;
+    return `LIFE LOST · ${n} ${n === 1 ? "life" : "lives"} left`;
+  }
+
   getChase(): number {
     return this.chase;
   }
@@ -236,6 +268,7 @@ export class Game {
   }
 
   getMirrorHint(): string {
+    if (!this.isRunning()) return "";
     const now = performance.now();
     const w = this.getMirrorWarningProgress();
     if (w > 0 && this.mirrorNextFireAt > 0) {
@@ -252,6 +285,7 @@ export class Game {
 
   dispose(): void {
     window.removeEventListener("resize", this.resizeBound);
+    window.removeEventListener("keydown", this.keyDownBound, this.keyListenerOpts);
     this.renderer.dispose();
   }
 
@@ -280,6 +314,8 @@ export class Game {
     this.mirrorNextFireAt = 0;
     this.mirrorWarningStartAt = 0;
     this.stumbleCooldown = 0;
+    this.lives = STARTING_LIVES;
+    this.lifeLostBannerUntil = 0;
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -327,6 +363,7 @@ export class Game {
 
   /** 0–1: mirror flip glitch transition (decaying). */
   getVfxMirrorGlitch(): number {
+    if (!this.isRunning()) return 0;
     const now = performance.now();
     if (now >= this.vfxMirrorGlitchUntil) return 0;
     return THREE.MathUtils.clamp((this.vfxMirrorGlitchUntil - now) / 720, 0, 1);
@@ -334,6 +371,7 @@ export class Game {
 
   /** 0–1: chromatic / danger pulse (chase, telegraph, stumble). */
   getVfxDangerChroma(): number {
+    if (!this.isRunning()) return 0;
     const now = performance.now();
     const chaseN = Math.pow(Math.max(0, (this.chase - 0.4) / 0.6), 1.25);
     const warn = this.getMirrorWarningProgress();
@@ -347,6 +385,7 @@ export class Game {
 
   /** 0–1: screen warp while horizontal invert “beds in”. */
   getVfxInvertWarp(): number {
+    if (!this.isRunning()) return 0;
     const now = performance.now();
     if (now >= this.vfxInvertWarpUntil) return 0;
     return THREE.MathUtils.clamp((this.vfxInvertWarpUntil - now) / 920, 0, 1);
@@ -354,6 +393,7 @@ export class Game {
 
   /** 0–1 flash after a tight near-miss (HUD / score pop). */
   getNearMissFlash(): number {
+    if (!this.isRunning()) return 0;
     const now = performance.now();
     if (now >= this.nearMissFlashUntil) return 0;
     return THREE.MathUtils.clamp((this.nearMissFlashUntil - now) / 240, 0, 1);
@@ -1186,13 +1226,31 @@ export class Game {
 
   private spawnObstacle(): void {
     const z = -SPAWN_AHEAD - this.distance;
+    const dNew = this.distance;
     const roll = Math.random();
     let kind: ObstacleKind;
     if (roll < 0.38) kind = "block";
     else if (roll < 0.69) kind = "low";
     else kind = "high";
 
-    const lanePick = LANES[Math.floor(Math.random() * 3)];
+    let lanePick = LANES[Math.floor(Math.random() * 3)];
+
+    const blockLanesInCluster = new Set<0 | 1 | 2>();
+    for (const o of this.obstacles) {
+      if (o.kind !== "block") continue;
+      const dO = -o.z - SPAWN_AHEAD;
+      if (Math.abs(dO - dNew) > BLOCK_CLUSTER_D) continue;
+      blockLanesInCluster.add(laneToGridIndex(o.lane));
+    }
+
+    if (kind === "block") {
+      if (blockLanesInCluster.size >= 3) {
+        kind = Math.random() < 0.55 ? "low" : "high";
+      } else if (blockLanesInCluster.size === 2) {
+        const free = ([0, 1, 2] as const).find((i) => !blockLanesInCluster.has(i))!;
+        lanePick = gridIndexToLane(free);
+      }
+    }
 
     const group = new THREE.Group();
     group.position.z = z;
@@ -1302,7 +1360,7 @@ export class Game {
 
   /** When obstacle passes behind player, reward razor-thin clears. */
   private scanNearMissPasses(): void {
-    const px = LANES[this.playerLane] * LANE_WIDTH;
+    const px = this.player.position.x;
     const pz = PLAYER_Z;
     const charY = this.playerY;
     const headTop = charY + (this.sliding ? 0.78 : 1.58);
@@ -1333,7 +1391,7 @@ export class Game {
   }
 
   private checkCollisions(): void {
-    const px = LANES[this.playerLane] * LANE_WIDTH;
+    const px = this.player.position.x;
     const pz = PLAYER_Z;
     const charY = this.playerY;
 
@@ -1360,43 +1418,67 @@ export class Game {
   private collideFail(o: Obstacle): void {
     if (o.hit) return;
     o.hit = true;
+    this.lives -= 1;
     this.stumble();
+    if (this.lives > 0) {
+      this.lifeLostBannerUntil = performance.now() + 2800;
+    }
+    if (this.lives <= 0) {
+      this.endGame(
+        "Out of lives — each obstacle hit costs one. You get three; use lanes, jump, and slide to stay clean.",
+      );
+    }
   }
 
-  private updateInput(): void {
-    if (this.keys.has("KeyA") || this.keys.has("ArrowLeft")) {
-      this.keys.delete("KeyA");
-      this.keys.delete("ArrowLeft");
-      this.queueLane(-1);
-    }
-    if (this.keys.has("KeyD") || this.keys.has("ArrowRight")) {
-      this.keys.delete("KeyD");
-      this.keys.delete("ArrowRight");
-      this.queueLane(1);
-    }
-    if (this.keys.has("KeyW") || this.keys.has("Space")) {
-      this.keys.delete("KeyW");
-      this.keys.delete("Space");
-      this.tryJump();
-    }
-    if (this.keys.has("KeyS") || this.keys.has("ArrowDown")) {
-      this.keys.delete("KeyS");
-      this.keys.delete("ArrowDown");
-      this.trySlide();
-    }
+  /**
+   * Arrow keys + WASD on `window` capture so keys are seen before embedded UI / bubbling.
+   * Arrows skip strict Ctrl/Alt checks (those blocked browser/OS combos only for letters).
+   */
+  private onGlobalKeyDown(e: KeyboardEvent): void {
+    if (!this.running || this.gameOver) return;
+
+    const code = e.code;
+    const key = e.key;
+    const kc = (e as KeyboardEvent & { keyCode?: number }).keyCode ?? 0;
+    const left = code === "ArrowLeft" || key === "ArrowLeft" || kc === 37;
+    const right = code === "ArrowRight" || key === "ArrowRight" || kc === 39;
+    const up = code === "ArrowUp" || key === "ArrowUp" || kc === 38;
+    const down = code === "ArrowDown" || key === "ArrowDown" || kc === 40;
+    const arrow = left || right || up || down;
+
+    if (e.metaKey) return;
+    if (arrow && e.altKey) return;
+    if (!arrow && (e.altKey || e.ctrlKey)) return;
+
+    const a = code === "KeyA";
+    const d = code === "KeyD";
+    const w = code === "KeyW";
+    const s = code === "KeyS";
+    const space = code === "Space";
+
+    if (!(left || right || up || down || a || d || w || s || space)) return;
+    e.preventDefault();
+    if (left || a) this.queueLane(-1);
+    else if (right || d) this.queueLane(1);
+    else if (up || w || space) this.tryJump();
+    else if (down || s) this.trySlide();
   }
 
   update(): void {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     if (this.running && !this.gameOver) {
-      this.updateInput();
-
       this.tickMirrorRealitySystem(performance.now());
 
       const diffRamp = 1 + this.aliveTime * 0.02;
-      const targetV = 14.6 + this.aliveTime * 0.72 * diffRamp;
+      const scoreMilestones = Math.min(
+        MAX_SPEED_MILESTONES,
+        Math.floor(this.score / SCORE_SPEED_MILESTONE),
+      );
+      const scoreSpeedBoost = scoreMilestones * SPEED_BONUS_PER_MILESTONE;
+      const vmax = 42 + scoreMilestones * VMAX_BONUS_PER_MILESTONE;
+      const targetV = 14.6 + this.aliveTime * 0.72 * diffRamp + scoreSpeedBoost;
       this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * 1.55);
-      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, 10.5, 42);
+      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, 10.5, vmax);
 
       this.distance += this.velocityZ * dt;
       this.aliveTime += dt;
@@ -1452,10 +1534,13 @@ export class Game {
 
         this.ensureChunks();
 
-        const spacing = THREE.MathUtils.lerp(11.2, 4.85, Math.min(1, this.aliveTime / 88));
+        const spacing = Math.max(
+          MIN_OBSTACLE_STEP,
+          THREE.MathUtils.lerp(11.2, 4.85, Math.min(1, this.aliveTime / 88)) + randRange(-1.2, 2.2),
+        );
         if (this.distance >= this.nextObstacleAt) {
           this.spawnObstacle();
-          this.nextObstacleAt += spacing + randRange(-1.2, 2.2);
+          this.nextObstacleAt += spacing;
         }
 
         this.obstacles = this.obstacles.filter((o) => {
@@ -1519,6 +1604,20 @@ export class Game {
     } else {
       this.gameOverReason = reason;
     }
+
+    document.body.classList.remove("mirror-warning", "mirror-flash");
+    this.mirrorAnnounceUntil = 0;
+    this.vfxMirrorGlitchUntil = 0;
+    this.vfxInvertWarpUntil = 0;
+    this.vfxStumblePulseUntil = 0;
+    this.nearMissFlashUntil = 0;
+    this.lifeLostBannerUntil = 0;
+    this.mirrorCamRoll = 0;
+    this.mirrorLayer = false;
+    this.mirrorPhysicsFlip = false;
+    this.worldFlipX = false;
+    this.worldGroup.scale.set(1, 1, 1);
+    this.applyVisualLayer(false);
   }
 
   private onResize(): void {

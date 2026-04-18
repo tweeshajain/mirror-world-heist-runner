@@ -31,11 +31,14 @@ body {
   inset: 0;
   z-index: 0;
   transform-origin: center center;
-  will-change: transform, filter, clip-path;
   transition: filter 0.14s ease-out;
   filter: saturate(calc(1 + var(--vfx-danger, 0) * 0.32))
     contrast(calc(1 + var(--vfx-danger, 0) * 0.1))
     blur(calc(var(--vfx-danger, 0) * 0.38px));
+}
+
+#c-wrap:focus {
+  outline: none;
 }
 
 #c-wrap::after {
@@ -125,6 +128,68 @@ body.game-running #quick-tip {
 
 #score {
   font-size: clamp(1.25rem, 4vw, 1.75rem);
+}
+
+.lives-hud {
+  font-size: clamp(1rem, 3.2vw, 1.35rem);
+  letter-spacing: 0.06em;
+  color: #ff4d8a;
+  text-shadow: 0 0 14px rgba(255, 45, 130, 0.65);
+  pointer-events: none;
+  min-width: 4.5em;
+}
+
+.lives-hud.life-lost-pulse {
+  animation: lifeLostPulse 0.45s ease-in-out infinite;
+}
+
+@keyframes lifeLostPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(1.12);
+    filter: brightness(1.35);
+  }
+}
+
+.life-lost-banner {
+  position: fixed;
+  top: min(22vh, 180px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  max-width: min(92vw, 420px);
+  padding: 14px 22px;
+  border-radius: 12px;
+  font-size: clamp(1rem, 3.8vw, 1.35rem);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+  color: #fff;
+  background: linear-gradient(135deg, rgba(120, 0, 30, 0.94), rgba(40, 0, 20, 0.92));
+  border: 2px solid rgba(255, 80, 120, 0.85);
+  box-shadow: 0 0 40px rgba(255, 40, 90, 0.55), inset 0 0 20px rgba(255, 0, 60, 0.12);
+  pointer-events: none;
+  animation: lifeLostBannerPop 0.35s ease-out;
+}
+
+.life-lost-banner[hidden] {
+  display: none !important;
+}
+
+@keyframes lifeLostBannerPop {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
 }
 
 #layer-badge {

@@ -4,6 +4,7 @@ import { Game } from "./Game";
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 const cWrap = document.getElementById("c-wrap") as HTMLDivElement;
 const scoreEl = document.getElementById("score")!;
+const livesEl = document.getElementById("lives")!;
 const chaseBar = document.getElementById("chase-bar")!;
 const layerBadge = document.getElementById("layer-badge")!;
 const mirrorHint = document.getElementById("mirror-hint")!;
@@ -20,6 +21,7 @@ const sysErrOverlay = document.getElementById("system-error-overlay") as HTMLDiv
 const sysErrDetail = document.getElementById("syserr-detail")!;
 const sysErrCount = document.getElementById("syserr-count")!;
 const sysErrHex = document.getElementById("syserr-hex")!;
+const lifeLostBanner = document.getElementById("life-lost-banner")!;
 
 const SYS_ERR_LINES = [
   "CONTROL BUS SIGNATURE DRIFT",
@@ -32,28 +34,59 @@ const game = new Game(canvas);
 
 let prevNearMiss = 0;
 
+cWrap.addEventListener(
+  "pointerdown",
+  () => {
+    if (game.isRunning()) canvas.focus({ preventScroll: true });
+  },
+  { capture: true },
+);
+
 function wipeScreenJuice(): void {
   canvas.style.transform = "";
+  document.documentElement.style.setProperty("--mirror-warn", "0");
   document.documentElement.style.setProperty("--vfx-glitch", "0");
   document.documentElement.style.setProperty("--vfx-danger", "0");
   document.documentElement.style.setProperty("--vfx-invert", "0");
   document.documentElement.style.setProperty("--near-miss", "0");
+  document.body.classList.remove("mirror-warning", "mirror-flash", "layer-mirror-city");
   cWrap.classList.remove("vfx-glitching");
   scoreEl.classList.remove("near-miss-pop");
   sysErrOverlay.hidden = true;
   sysErrOverlay.setAttribute("aria-hidden", "true");
   document.documentElement.style.setProperty("--syserr-pulse", "0");
+  lifeLostBanner.hidden = true;
+  lifeLostBanner.textContent = "";
+  livesEl.classList.remove("life-lost-pulse");
+}
+
+function livesLabel(n: number): string {
+  return "♥ ".repeat(Math.max(0, n)).trimEnd() || "—";
 }
 
 function setHud(): void {
+  const live = game.isRunning();
   scoreEl.textContent = String(game.getScore());
+  const lives = game.getLives();
+  livesEl.textContent = livesLabel(lives);
+  livesEl.setAttribute("aria-label", `${lives} lives remaining`);
+  const lifeLostMsg = live ? game.getLifeLostBannerText() : null;
+  if (lifeLostMsg) {
+    lifeLostBanner.hidden = false;
+    lifeLostBanner.textContent = lifeLostMsg;
+    livesEl.classList.add("life-lost-pulse");
+  } else {
+    lifeLostBanner.hidden = true;
+    lifeLostBanner.textContent = "";
+    livesEl.classList.remove("life-lost-pulse");
+  }
   chaseBar.style.width = `${Math.round(game.getChase() * 100)}%`;
   const mirror = game.getMirrorLayer();
   layerBadge.textContent = mirror ? "MIRROR" : "REAL";
   layerBadge.className = mirror ? "layer-mirror" : "layer-real";
-  mirrorHint.textContent = game.getMirrorHint();
+  mirrorHint.textContent = live ? game.getMirrorHint() : "";
 
-  const warn = game.getMirrorWarningProgress();
+  const warn = live ? game.getMirrorWarningProgress() : 0;
   document.documentElement.style.setProperty("--mirror-warn", String(warn));
   if (warn > 0) {
     document.body.classList.add("mirror-warning");
@@ -63,8 +96,8 @@ function setHud(): void {
     mirrorWarnBar.style.transform = "scaleX(0)";
   }
 
-  const sec = game.getMirrorSecondsRemaining();
-  if (warn > 0.02 && sec > 0) {
+  const sec = live ? game.getMirrorSecondsRemaining() : 0;
+  if (live && warn > 0.02 && sec > 0) {
     sysErrOverlay.hidden = false;
     sysErrOverlay.setAttribute("aria-hidden", "false");
     const lineIdx = Math.floor(performance.now() / 200) % SYS_ERR_LINES.length;
@@ -79,19 +112,19 @@ function setHud(): void {
     document.documentElement.style.setProperty("--syserr-pulse", "0");
   }
 
-  const live = game.isRunning();
   document.body.classList.toggle("game-running", live);
+  cWrap.setAttribute("aria-hidden", live ? "false" : "true");
   quickTip.hidden = !live;
   quickTip.setAttribute("aria-hidden", live ? "false" : "true");
   const nm = game.getNearMissFlash();
   document.documentElement.style.setProperty("--near-miss", nm.toFixed(4));
-  hudEl.classList.toggle("near-miss-glow", nm > 0.04);
-  if (nm > 0.9 && prevNearMiss <= 0.9) {
+  hudEl.classList.toggle("near-miss-glow", live && nm > 0.04);
+  if (live && nm > 0.9 && prevNearMiss <= 0.9) {
     scoreEl.classList.remove("near-miss-pop");
     void scoreEl.offsetWidth;
     scoreEl.classList.add("near-miss-pop");
   }
-  if (nm < 0.05) scoreEl.classList.remove("near-miss-pop");
+  if (!live || nm < 0.05) scoreEl.classList.remove("near-miss-pop");
   prevNearMiss = nm;
 }
 
@@ -116,21 +149,25 @@ function applyScreenVfx(): void {
   }
 }
 
+function focusPlaySurface(): void {
+  game.start();
+  cWrap.focus({ preventScroll: true });
+  canvas.focus({ preventScroll: true });
+}
+
 btnStart.addEventListener("click", () => {
-  canvas.focus();
   startScreen.hidden = true;
   gameover.hidden = true;
   wipeScreenJuice();
   prevNearMiss = 0;
-  game.start();
+  focusPlaySurface();
 });
 
 btnRetry.addEventListener("click", () => {
   gameover.hidden = true;
   wipeScreenJuice();
   prevNearMiss = 0;
-  game.start();
-  canvas.focus();
+  focusPlaySurface();
 });
 
 function tick(): void {
