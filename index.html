@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0a0514" />
+    <title>Mirror World Heist Runner</title>
+  </head>
+  <body>
+    <div id="ui">
+      <div id="hud">
+        <div id="score-row">
+          <span id="score">0</span>
+          <span id="layer-badge" class="layer-real">REAL</span>
+        </div>
+        <div id="chase-bar-wrap">
+          <div id="chase-label">Enforcement proximity</div>
+          <div id="chase-bar-bg"><div id="chase-bar"></div></div>
+        </div>
+        <div id="mirror-warn-bar" aria-hidden="true"></div>
+        <div id="mirror-hint" aria-live="polite"></div>
+        <p id="quick-tip">
+          <strong>Run</strong> forward · <strong>lanes</strong> dodge · <strong>jump / slide</strong> hazards ·
+          <strong>Mirror</strong> flips controls every 15s (watch the 1s cue).
+        </p>
+      </div>
+      <div id="start-screen">
+        <h1>Mirror World Heist Runner</h1>
+        <p class="tagline">
+          <strong>3 seconds:</strong> you run, dodge three lanes, jump or slide obstacles, and survive while
+          <strong>Mirror Reality</strong> randomly flips controls — telegraphed 1s before it hits.
+        </p>
+        <ul class="controls">
+          <li><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> <kbd>→</kbd> — lanes</li>
+          <li><kbd>W</kbd> / <kbd>Space</kbd> — jump · <kbd>S</kbd> — slide</li>
+          <li>Mobile: swipe <strong>up</strong> jump · <strong>down</strong> slide ·
+            <strong>left/right</strong> lanes</li>
+        </ul>
+        <button id="btn-start" type="button">Run</button>
+      </div>
+      <div id="gameover" hidden>
+        <h2>Run ended</h2>
+        <p id="go-reason"></p>
+        <p class="final">Score: <span id="final-score">0</span></p>
+        <button id="btn-retry" type="button">Retry</button>
+      </div>
+    </div>
+    <div
+      id="system-error-overlay"
+      class="system-error-overlay"
+      hidden
+      aria-live="assertive"
+      aria-atomic="true"
+    >
+      <div class="syserr-scan"></div>
+      <div class="syserr-panel">
+        <div class="syserr-rail">HEIST_OS · CONTROL_PLANE · <span id="syserr-hex">0xM1RR</span></div>
+        <div class="syserr-title">
+          <span class="syserr-warn">SYSTEM</span> <span class="syserr-err">ERROR</span>
+        </div>
+        <p class="syserr-detail" id="syserr-detail">CONTROL BUS SIGNATURE DRIFT</p>
+        <p class="syserr-count" id="syserr-count">PROTOCOL LOCK IN — 1.0s</p>
+        <p class="syserr-foot">DO NOT TRUST MUSCLE MEMORY · AWAIT REM</p>
+      </div>
+    </div>
+    <div id="c-wrap" aria-hidden="true">
+      <canvas id="c"></canvas>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
