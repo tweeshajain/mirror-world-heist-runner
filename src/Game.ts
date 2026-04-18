@@ -7,8 +7,14 @@ const CHUNK_LENGTH = 18;
 const PLAYER_Z = 0;
 const SPAWN_AHEAD = 82;
 const DESPAWN_BEHIND = 38;
-/** Minimum advance of `nextObstacleAt` — keeps gaps readable at high speed. */
-const MIN_OBSTACLE_STEP = 14;
+/** Never place consecutive spawns closer than this (after time + score modifiers). */
+const OBSTACLE_SPACING_MIN = 12.75;
+/** Extra distance between obstacles at low score; shrinks a bit each SCORE_SPEED_MILESTONE pts. */
+const OBSTACLE_SPACING_BASE_START = 30;
+const OBSTACLE_SPACING_BASE_END = 19;
+const OBSTACLE_TIME_RAMP_S = 125;
+/** Subtracted from spacing per each full SCORE_SPEED_MILESTONE points (easier early, denser later). */
+const OBSTACLE_TIGHTEN_PER_SCORE_TIER = 0.55;
 /** In spawn-distance space: blocks closer than this cannot occupy all three lanes (no unavoidable wall). */
 const BLOCK_CLUSTER_D = 9.5;
 /** Each time floor(score / this) increases, run speed bumps (target + max cap). */
@@ -1498,9 +1504,14 @@ export class Game {
 
         this.ensureChunks();
 
+        const scoreTiers = Math.min(MAX_SPEED_MILESTONES, Math.floor(this.score / SCORE_SPEED_MILESTONE));
+        const timeT = Math.min(1, this.aliveTime / OBSTACLE_TIME_RAMP_S);
+        const baseSpacing =
+          THREE.MathUtils.lerp(OBSTACLE_SPACING_BASE_START, OBSTACLE_SPACING_BASE_END, timeT) +
+          randRange(-0.65, 1.35);
         const spacing = Math.max(
-          MIN_OBSTACLE_STEP,
-          THREE.MathUtils.lerp(16.5, 9.25, Math.min(1, this.aliveTime / 100)) + randRange(-0.7, 1.5),
+          OBSTACLE_SPACING_MIN,
+          baseSpacing - scoreTiers * OBSTACLE_TIGHTEN_PER_SCORE_TIER,
         );
         if (this.distance >= this.nextObstacleAt) {
           this.spawnObstacle();
