@@ -39,6 +39,8 @@ const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
 const LIFE_LOST_FREEZE_MS = 1000;
 
 const JETPACK_SCORE_TRIGGER = 4000;
+/** If the first jetpack pickup is missed, a second pickup can be scheduled after this score. */
+const JETPACK_RETRY_SCORE_TRIGGER = 5000;
 /** Jetpack pickup spawns at a random wall-clock delay in this range after score crosses the trigger. */
 const JETPACK_SPAWN_DELAY_MIN_MS = 2200;
 const JETPACK_SPAWN_DELAY_MAX_MS = 5600;
@@ -94,6 +96,8 @@ interface MysteryBoxPickup {
   mesh: THREE.Group;
   lane: (typeof LANES)[number];
   z: number;
+  /** Wall clock when spawned — despawn ignored until grace elapses so it cannot vanish same-frame. */
+  spawnedAtMs: number;
 }
 
 function createMysteryQuestionTexture(): THREE.CanvasTexture {
@@ -227,8 +231,12 @@ export class Game {
   private jetpackPostImmunityUntil = 0;
   /** Once per run: wall-clock time when jetpack pickup should spawn (0 = not scheduled). */
   private jetpackSpawnAtMs = 0;
-  /** True after jetpack sequence finished (pickup used or missed past despawn). */
+  /** True after jetpack sequence finished (flew once, or both pickups missed). */
   private jetpackUsedThisRun = false;
+  /** How many jetpack pickups have been placed this run (0–2). */
+  private jetpackPickupSpawnsThisRun = 0;
+  /** True once the player grabs a pickup and enters flight. */
+  private jetpackEnteredFlightThisRun = false;
   private jetpackPickup: JetpackPickup | null = null;
   /** While > 0 and `now <` this value, player is in jetpack flight. */
   private jetpackFlyingUntil = 0;
@@ -522,6 +530,8 @@ export class Game {
     this.jetpackPostImmunityUntil = 0;
     this.jetpackSpawnAtMs = 0;
     this.jetpackUsedThisRun = false;
+    this.jetpackPickupSpawnsThisRun = 0;
+    this.jetpackEnteredFlightThisRun = false;
     if (this.jetpackPickup) {
       this.worldGroup.remove(this.jetpackPickup.mesh);
       this.jetpackPickup = null;
@@ -1586,7 +1596,13 @@ export class Game {
 
     this.worldGroup.add(g);
     this.jetpackPickup = { mesh: g, lane, z };
-    this.announce("JETPACK READY — drive through it", 2400);
+    this.jetpackPickupSpawnsThisRun += 1;
+    this.announce(
+      this.jetpackPickupSpawnsThisRun >= 2
+        ? "JETPACK — second chance · drive through it"
+        : "JETPACK READY — drive through it",
+      2400,
+    );
   }
 
   private checkJetpackPickup(): void {
@@ -1599,6 +1615,7 @@ export class Game {
     if (Math.abs(ox - this.player.position.x) > 1.25) return;
     this.worldGroup.remove(this.jetpackPickup.mesh);
     this.jetpackPickup = null;
+    this.jetpackEnteredFlightThisRun = true;
     const now = performance.now();
     this.jetpackFlyingUntil = now + JETPACK_FLY_DURATION_MS;
     this.jetpackNextCoinAtMs = now + 280;
@@ -1612,7 +1629,9 @@ export class Game {
     if (wz > DESPAWN_BEHIND + 12) {
       this.worldGroup.remove(this.jetpackPickup.mesh);
       this.jetpackPickup = null;
-      this.jetpackUsedThisRun = true;
+      if (this.jetpackEnteredFlightThisRun || this.jetpackPickupSpawnsThisRun >= 2) {
+        this.jetpackUsedThisRun = true;
+      }
     }
   }
 
@@ -1658,18 +1677,20 @@ export class Game {
     g.userData.questionTex = qTex;
 
     this.worldGroup.add(g);
-    this.mysteryBoxPickup = { mesh: g, lane, z };
+    this.mysteryBoxPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
     this.announce("MYSTERY BOX — drive through it if you dare", 2600);
   }
 
   private checkMysteryBoxPickup(): void {
     if (!this.mysteryBoxPickup) return;
+    if (this.isJetpackFlying()) return;
     this.worldGroup.updateMatrixWorld(true);
     this.mysteryBoxPickup.mesh.getWorldPosition(this.owp);
     const oz = this.owp.z;
     const ox = this.owp.x;
     if (Math.abs(oz - PLAYER_Z) > 1.45) return;
     if (Math.abs(ox - this.player.position.x) > 1.28) return;
+    if (this.playerY > 1.45) return;
     this.worldGroup.remove(this.mysteryBoxPickup.mesh);
     this.mysteryBoxPickup = null;
     const now = performance.now();
@@ -1680,6 +1701,8 @@ export class Game {
 
   private updateMysteryBoxPickupDespawn(): void {
     if (!this.mysteryBoxPickup) return;
+    if (performance.now() - this.mysteryBoxPickup.spawnedAtMs < 650) return;
+    this.worldGroup.updateMatrixWorld(true);
     this.mysteryBoxPickup.mesh.getWorldPosition(this.owp);
     const wz = this.owp.z;
     if (wz > DESPAWN_BEHIND + 12) {
@@ -2156,13 +2179,21 @@ export class Game {
 
       this.score += this.velocityZ * dt * 1.22 + dt * 26;
 
-      if (!this.jetpackUsedThisRun && this.jetpackSpawnAtMs === 0 && Math.floor(this.score) >= JETPACK_SCORE_TRIGGER) {
-        this.jetpackSpawnAtMs = nowTick + randRange(JETPACK_SPAWN_DELAY_MIN_MS, JETPACK_SPAWN_DELAY_MAX_MS);
+      if (!this.jetpackUsedThisRun && this.jetpackSpawnAtMs === 0 && !this.jetpackPickup && this.jetpackFlyingUntil === 0) {
+        if (this.jetpackPickupSpawnsThisRun === 0 && this.score >= JETPACK_SCORE_TRIGGER) {
+          this.jetpackSpawnAtMs = nowTick + randRange(JETPACK_SPAWN_DELAY_MIN_MS, JETPACK_SPAWN_DELAY_MAX_MS);
+        } else if (
+          this.jetpackPickupSpawnsThisRun === 1 &&
+          !this.jetpackEnteredFlightThisRun &&
+          this.score >= JETPACK_RETRY_SCORE_TRIGGER
+        ) {
+          this.jetpackSpawnAtMs = nowTick + randRange(JETPACK_SPAWN_DELAY_MIN_MS, JETPACK_SPAWN_DELAY_MAX_MS);
+        }
       }
       if (
         !this.mysteryBoxUsedThisRun &&
         this.mysteryBoxSpawnAtMs === 0 &&
-        Math.floor(this.score) >= MYSTERY_BOX_SCORE_TRIGGER
+        this.score >= MYSTERY_BOX_SCORE_TRIGGER
       ) {
         this.mysteryBoxSpawnAtMs = nowTick + randRange(MYSTERY_BOX_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_SPAWN_DELAY_MAX_MS);
       }
@@ -2170,7 +2201,8 @@ export class Game {
         !this.mysteryBoxUsedThisRun &&
         this.mysteryBoxSpawnAtMs > 0 &&
         nowTick >= this.mysteryBoxSpawnAtMs &&
-        !this.mysteryBoxPickup
+        !this.mysteryBoxPickup &&
+        !this.isJetpackFlying()
       ) {
         this.spawnMysteryBoxPickup();
       }
