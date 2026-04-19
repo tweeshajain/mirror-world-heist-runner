@@ -17,6 +17,12 @@ const OBSTACLE_TIME_RAMP_S = 125;
 const OBSTACLE_TIGHTEN_PER_SCORE_TIER = 0.55;
 /** In spawn-distance space: blocks closer than this cannot occupy all three lanes (no unavoidable wall). */
 const BLOCK_CLUSTER_D = 9.5;
+/** Pink block height (world Y); above max jump apex so players must change lanes, not jump over. */
+const BLOCK_HEIGHT = 2.88;
+/** Purple slide barricade: pass only if head top stays under this Y (standing/jump still hit). */
+const HIGH_BAR_CLEARANCE = 1.02;
+const HIGH_BEAM_HEIGHT = 1.05;
+const HIGH_POST_HEIGHT = 2.14;
 /** Each time floor(score / this) increases, run speed bumps (target + max cap). */
 const SCORE_SPEED_MILESTONE = 2000;
 const SPEED_BONUS_PER_MILESTONE = 2.85;
@@ -156,6 +162,8 @@ export class Game {
   private running = false;
   private gameOver = false;
   private gameOverReason = "";
+  /** True after an obstacle cost a life this tick (avoids also losing one to enforcement same frame). */
+  private obstacleLifeLossThisUpdate = false;
 
   private clock = new THREE.Clock();
   private resizeBound = () => this.onResize();
@@ -521,11 +529,6 @@ export class Game {
       if (obj instanceof THREE.Group && obj.userData.towerCluster) {
         const tc = obj.userData.towerCluster as { base: number; d: number };
         obj.position.x = mirror ? tc.base + tc.d : tc.base;
-      }
-      if (obj instanceof THREE.Group && obj.userData.bridgeCluster) {
-        const bc = obj.userData.bridgeCluster as { base: number; d: number; baseRy: number; dRy: number };
-        obj.position.x = mirror ? bc.base + bc.d : bc.base;
-        obj.rotation.y = mirror ? bc.baseRy + bc.dRy : bc.baseRy;
       }
       if (!(obj instanceof THREE.Mesh) || Array.isArray(obj.material)) return;
       const mat = obj.material;
@@ -1018,61 +1021,6 @@ export class Game {
     parent.add(back);
   }
 
-  private addBridgeSpan(parent: THREE.Group, _zCenter: number, seed: number): void {
-    if (seed % 2 === 0) return;
-    const bridge = new THREE.Group();
-    const spanLocalZ = ((seed % 5) - 2) * 2.2;
-    bridge.position.set(0, 0, spanLocalZ);
-    const skew = ((seed % 11) / 11 - 0.5) * 0.08;
-    bridge.userData.bridgeCluster = { base: 0, d: skew * 4, baseRy: 0, dRy: skew };
-
-    const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(LANE_WIDTH * 3.9, 0.12, 2.8),
-      new THREE.MeshStandardMaterial({
-        color: 0x070a12,
-        metalness: 0.8,
-        roughness: 0.28,
-        emissive: 0x12081a,
-        emissiveIntensity: 0.22,
-      }),
-    );
-    deck.position.y = 2.05;
-    deck.receiveShadow = true;
-    deck.castShadow = true;
-    bridge.add(deck);
-
-    const cableMat = new THREE.MeshStandardMaterial({
-      color: 0x111822,
-      emissive: 0x66ffff,
-      emissiveIntensity: 0.45,
-      metalness: 0.6,
-      roughness: 0.25,
-    });
-    for (const sx of [-1, 1]) {
-      const tower = new THREE.Mesh(
-        new THREE.BoxGeometry(0.35, 2.3, 0.35),
-        new THREE.MeshPhysicalMaterial({
-          color: 0x050810,
-          metalness: 0.75,
-          roughness: 0.22,
-          clearcoat: 0.6,
-          emissive: 0x020408,
-          emissiveIntensity: 0.08,
-        }),
-      );
-      tower.position.set(sx * LANE_WIDTH * 2.25, 1.15, 0);
-      tower.castShadow = true;
-      bridge.add(tower);
-
-      const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3.2, 6), cableMat);
-      cable.rotation.z = Math.PI / 2;
-      cable.position.set(sx * LANE_WIDTH * 1.1, 2.35, 0);
-      cable.userData.neon = true;
-      bridge.add(cable);
-    }
-    parent.add(bridge);
-  }
-
   private createChunk(zCenter: number): RoadChunk {
     const group = new THREE.Group();
     group.position.z = zCenter;
@@ -1139,8 +1087,6 @@ export class Game {
       line.userData.neon = true;
       group.add(line);
     }
-
-    this.addBridgeSpan(group, zCenter, seed);
 
     const sideZ = CHUNK_LENGTH * 0.42;
     this.addGlassSkyscraper(
@@ -1272,7 +1218,7 @@ export class Game {
 
     if (kind === "block") {
       const core = new THREE.Mesh(
-        new THREE.BoxGeometry(1.5, 1.6, 1.1),
+        new THREE.BoxGeometry(1.5, BLOCK_HEIGHT, 1.1),
         new THREE.MeshStandardMaterial({
           color: 0x120818,
           emissive: 0xff0066,
@@ -1281,7 +1227,7 @@ export class Game {
           roughness: 0.35,
         }),
       );
-      core.position.y = 0.8;
+      core.position.y = BLOCK_HEIGHT * 0.5;
       core.castShadow = true;
       group.add(core);
     } else if (kind === "low") {
@@ -1297,22 +1243,23 @@ export class Game {
       ramp.castShadow = true;
       group.add(ramp);
     } else {
+      const beamCy = HIGH_BAR_CLEARANCE + 0.07 + HIGH_BEAM_HEIGHT * 0.5;
       const beam = new THREE.Mesh(
-        new THREE.BoxGeometry(2.8, 0.35, 0.6),
+        new THREE.BoxGeometry(2.8, HIGH_BEAM_HEIGHT, 0.6),
         new THREE.MeshStandardMaterial({
           color: 0x10061a,
           emissive: 0xaa66ff,
           emissiveIntensity: 0.92,
         }),
       );
-      beam.position.y = 1.35;
+      beam.position.y = beamCy;
       beam.castShadow = true;
       group.add(beam);
       const postL = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.08, 0.1, 1.35, 8),
+        new THREE.CylinderGeometry(0.08, 0.1, HIGH_POST_HEIGHT, 8),
         new THREE.MeshStandardMaterial({ color: 0x0a0a12, metalness: 0.8, roughness: 0.3 }),
       );
-      postL.position.set(-1.15, 0.65, 0);
+      postL.position.set(-1.15, HIGH_POST_HEIGHT * 0.5, 0);
       const postR = postL.clone();
       postR.position.x = 1.15;
       group.add(postL, postR);
@@ -1366,6 +1313,32 @@ export class Game {
     this.lastStumbleUnderMirror = this.invertLR || this.swapJumpSlide || this.mirrorLayer;
   }
 
+  /** Mirror / HUD beat after losing a life but staying in the run (obstacle or enforcement). */
+  private scheduleLifeLostRecoverBeat(): void {
+    const now = performance.now();
+    const pad = LIFE_LOST_FREEZE_MS;
+    this.lifeLostFreezeUntil = now + pad;
+    this.lifeLostBannerUntil = now + Math.max(3200, pad + 800);
+    this.mirrorNextFireAt += pad;
+    this.mirrorWarningStartAt += pad;
+    if (this.mirrorAnnounceUntil > now) {
+      this.mirrorAnnounceUntil += pad;
+    }
+  }
+
+  /** Enforcement meter filled: costs a life like a hit; run ends only on last life. */
+  private resolveEnforcementCatch(): void {
+    if (!this.running || this.gameOver || this.chase < 1) return;
+    this.lives -= 1;
+    this.stumble();
+    if (this.lives <= 0) {
+      this.endGame("CHASE");
+      return;
+    }
+    this.chase = 0.38;
+    this.scheduleLifeLostRecoverBeat();
+  }
+
   private triggerNearMiss(): void {
     this.score += 38;
     this.nearMissFlashUntil = performance.now() + 260;
@@ -1399,7 +1372,9 @@ export class Game {
         tight = Math.abs(ox - px) < 1.22 && charY >= clearH - 0.1 && charY <= clearH + 0.12;
       } else {
         tight =
-          Math.abs(ox - px) < 1.32 && headTop <= 1.16 && headTop >= 0.88;
+          Math.abs(ox - px) < 1.32 &&
+          headTop <= HIGH_BAR_CLEARANCE + 0.12 &&
+          headTop >= HIGH_BAR_CLEARANCE - 0.28;
       }
       if (tight) this.triggerNearMiss();
     }
@@ -1419,13 +1394,16 @@ export class Game {
       if (Math.abs(ox - px) > 1.35) continue;
 
       if (o.kind === "block") {
-        this.collideFail(o);
+        const headTop = charY + (this.sliding ? 0.78 : 1.58);
+        if (charY < BLOCK_HEIGHT && headTop > 0) {
+          this.collideFail(o);
+        }
       } else if (o.kind === "low") {
         const clearH = this.mirrorPhysicsFlip ? 0.58 : 0.74;
         if (charY < clearH) this.collideFail(o);
       } else {
         const headTop = charY + (this.sliding ? 0.78 : 1.58);
-        if (headTop > 1.08) this.collideFail(o);
+        if (headTop > HIGH_BAR_CLEARANCE) this.collideFail(o);
       }
     }
   }
@@ -1437,17 +1415,10 @@ export class Game {
       return;
     }
     this.lives -= 1;
+    this.obstacleLifeLossThisUpdate = true;
     this.stumble();
     if (this.lives > 0) {
-      const now = performance.now();
-      const pad = LIFE_LOST_FREEZE_MS;
-      this.lifeLostFreezeUntil = now + pad;
-      this.lifeLostBannerUntil = now + Math.max(3200, pad + 800);
-      this.mirrorNextFireAt += pad;
-      this.mirrorWarningStartAt += pad;
-      if (this.mirrorAnnounceUntil > now) {
-        this.mirrorAnnounceUntil += pad;
-      }
+      this.scheduleLifeLostRecoverBeat();
     }
     if (this.lives <= 0) {
       this.endGame(
@@ -1497,6 +1468,7 @@ export class Game {
       this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
 
     if (this.running && !this.gameOver && !lifeFrozen) {
+      this.obstacleLifeLossThisUpdate = false;
       this.tickMirrorRealitySystem(performance.now());
 
       const diffRamp = 1 + this.aliveTime * 0.02;
@@ -1523,74 +1495,78 @@ export class Game {
       this.chase -= dt * 0.028;
       this.chase = THREE.MathUtils.clamp(this.chase, 0, 1);
 
-      if (this.chase >= 1) {
-        this.endGame("CHASE");
-      } else {
-        if (this.stumbleCooldown > 0) this.stumbleCooldown -= dt;
+      if (this.stumbleCooldown > 0) this.stumbleCooldown -= dt;
 
-        if (this.playerLane !== this.targetLane) {
-          this.laneBlend += dt * 10;
-          if (this.laneBlend >= 1) {
-            this.laneBlend = 0;
-            this.playerLane += this.targetLane > this.playerLane ? 1 : -1;
-          }
-        } else {
+      if (this.playerLane !== this.targetLane) {
+        this.laneBlend += dt * 10;
+        if (this.laneBlend >= 1) {
           this.laneBlend = 0;
+          this.playerLane += this.targetLane > this.playerLane ? 1 : -1;
         }
+      } else {
+        this.laneBlend = 0;
+      }
 
-        const fromX = LANES[this.playerLane] * LANE_WIDTH;
-        const toX = LANES[this.targetLane] * LANE_WIDTH;
-        const t = this.playerLane === this.targetLane ? 0 : this.laneBlend;
-        this.player.position.x = THREE.MathUtils.lerp(fromX, toX, t);
+      const fromX = LANES[this.playerLane] * LANE_WIDTH;
+      const toX = LANES[this.targetLane] * LANE_WIDTH;
+      const t = this.playerLane === this.targetLane ? 0 : this.laneBlend;
+      this.player.position.x = THREE.MathUtils.lerp(fromX, toX, t);
 
-        if (this.jumping) {
-          this.jumpVel += -28 * dt;
-          this.playerY += this.jumpVel * dt;
-          if (this.playerY <= 0) {
-            this.playerY = 0;
-            this.jumping = false;
-            this.jumpVel = 0;
-          }
+      if (this.jumping) {
+        this.jumpVel += -28 * dt;
+        this.playerY += this.jumpVel * dt;
+        if (this.playerY <= 0) {
+          this.playerY = 0;
+          this.jumping = false;
+          this.jumpVel = 0;
+        }
+      } else {
+        this.playerY += (0 - this.playerY) * Math.min(1, dt * 17);
+      }
+
+      if (this.sliding) {
+        this.slideTimer -= dt;
+        if (this.slideTimer <= 0) this.sliding = false;
+      }
+
+      this.player.position.y = this.playerY;
+
+      this.ensureChunks();
+
+      const scoreTiers = Math.min(MAX_SPEED_MILESTONES, Math.floor(this.score / SCORE_SPEED_MILESTONE));
+      const timeT = Math.min(1, this.aliveTime / OBSTACLE_TIME_RAMP_S);
+      const baseSpacing =
+        THREE.MathUtils.lerp(OBSTACLE_SPACING_BASE_START, OBSTACLE_SPACING_BASE_END, timeT) +
+        randRange(-0.65, 1.35);
+      const spacing = Math.max(
+        OBSTACLE_SPACING_MIN,
+        baseSpacing - scoreTiers * OBSTACLE_TIGHTEN_PER_SCORE_TIER,
+      );
+      if (this.distance >= this.nextObstacleAt) {
+        this.spawnObstacle();
+        this.nextObstacleAt += spacing;
+      }
+
+      this.obstacles = this.obstacles.filter((o) => {
+        const wz = o.mesh.position.z + this.worldGroup.position.z;
+        if (wz > DESPAWN_BEHIND) {
+          this.worldGroup.remove(o.mesh);
+          return false;
+        }
+        return true;
+      });
+
+      this.checkCollisions();
+      this.scanNearMissPasses();
+
+      this.score += this.velocityZ * dt * 1.22 + dt * 26;
+
+      if (this.chase >= 1) {
+        if (this.obstacleLifeLossThisUpdate) {
+          this.chase = 0.42;
         } else {
-          this.playerY += (0 - this.playerY) * Math.min(1, dt * 17);
+          this.resolveEnforcementCatch();
         }
-
-        if (this.sliding) {
-          this.slideTimer -= dt;
-          if (this.slideTimer <= 0) this.sliding = false;
-        }
-
-        this.player.position.y = this.playerY;
-
-        this.ensureChunks();
-
-        const scoreTiers = Math.min(MAX_SPEED_MILESTONES, Math.floor(this.score / SCORE_SPEED_MILESTONE));
-        const timeT = Math.min(1, this.aliveTime / OBSTACLE_TIME_RAMP_S);
-        const baseSpacing =
-          THREE.MathUtils.lerp(OBSTACLE_SPACING_BASE_START, OBSTACLE_SPACING_BASE_END, timeT) +
-          randRange(-0.65, 1.35);
-        const spacing = Math.max(
-          OBSTACLE_SPACING_MIN,
-          baseSpacing - scoreTiers * OBSTACLE_TIGHTEN_PER_SCORE_TIER,
-        );
-        if (this.distance >= this.nextObstacleAt) {
-          this.spawnObstacle();
-          this.nextObstacleAt += spacing;
-        }
-
-        this.obstacles = this.obstacles.filter((o) => {
-          const wz = o.mesh.position.z + this.worldGroup.position.z;
-          if (wz > DESPAWN_BEHIND) {
-            this.worldGroup.remove(o.mesh);
-            return false;
-          }
-          return true;
-        });
-
-        this.checkCollisions();
-        this.scanNearMissPasses();
-
-        this.score += this.velocityZ * dt * 1.22 + dt * 26;
       }
     }
 
