@@ -57,9 +57,9 @@ const COIN_SPAWN_INTERVAL_MS = 380;
 const MYSTERY_BOX_SCORE_TRIGGER = 7000;
 /** If the first mystery box is missed, a second pickup can be scheduled after this score. */
 const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
-/** Independent of jetpack timing: random delay in this range after score crosses the trigger. */
-const MYSTERY_BOX_SPAWN_DELAY_MIN_MS = 2600;
-const MYSTERY_BOX_SPAWN_DELAY_MAX_MS = 6400;
+/** Wall-clock delay before the pickup appears (after score crosses each trigger); keep within a few seconds. */
+const MYSTERY_BOX_SPAWN_DELAY_MIN_MS = 450;
+const MYSTERY_BOX_SPAWN_DELAY_MAX_MS = 3200;
 const MYSTERY_BOX_PICKUP_Z_OFFSET = 58;
 /** Collecting the box flips the entire view for this long (game keeps running). */
 const MYSTERY_FLIP_DURATION_MS = 5000;
