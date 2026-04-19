@@ -29,6 +29,8 @@ const MIRROR_WARN_MS = 1000;
 const STARTING_LIVES = 3;
 /** After Mirror Reality fires, obstacle hits do not cost lives (ms). */
 const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
+/** Non-fatal hit: freeze sim + input while the mirror-shatter beat plays (ms). */
+const LIFE_LOST_FREEZE_MS = 2000;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -146,6 +148,8 @@ export class Game {
 
   private touchStart: { x: number; y: number; t: number } | null = null;
   private lifeLostBannerUntil = 0;
+  /** Until this time (exclusive), world sim and input are paused after losing a life. */
+  private lifeLostFreezeUntil = 0;
   /** `performance.now()` until which obstacle hits do not cost lives (Mirror protocol grace). */
   private mirrorProtocolImmunityUntil = 0;
 
@@ -238,6 +242,7 @@ export class Game {
         const dt = performance.now() - this.touchStart.t;
         this.touchStart = null;
         if (!this.running || this.gameOver) return;
+        if (this.isLifeLostFrozen()) return;
         const min = 28;
         if (dt > 600) return;
         if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > min) {
@@ -279,6 +284,11 @@ export class Game {
     if (performance.now() >= this.lifeLostBannerUntil) return null;
     const n = this.lives;
     return `LIFE LOST · ${n} ${n === 1 ? "life" : "lives"} left`;
+  }
+
+  /** True while the run is frozen after a non-fatal hit (mirror shatter, no sim / no input). */
+  isLifeLostFrozen(): boolean {
+    return this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
   }
 
   getChase(): number {
@@ -338,6 +348,7 @@ export class Game {
     this.stumbleCooldown = 0;
     this.lives = STARTING_LIVES;
     this.lifeLostBannerUntil = 0;
+    this.lifeLostFreezeUntil = 0;
     this.mirrorProtocolImmunityUntil = 0;
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
@@ -803,7 +814,8 @@ export class Game {
   }
 
   private updateThiefAvatar(dt: number): void {
-    const sim = this.running && !this.gameOver;
+    const sim =
+      this.running && !this.gameOver && performance.now() >= this.lifeLostFreezeUntil;
     const px = this.player.position.x;
     const lateralVel = sim ? (px - this.prevPlayerWorldX) / Math.max(dt, 1e-4) : 0;
     this.prevPlayerWorldX = px;
@@ -1427,7 +1439,15 @@ export class Game {
     this.lives -= 1;
     this.stumble();
     if (this.lives > 0) {
-      this.lifeLostBannerUntil = performance.now() + 2800;
+      const now = performance.now();
+      const pad = LIFE_LOST_FREEZE_MS;
+      this.lifeLostFreezeUntil = now + pad;
+      this.lifeLostBannerUntil = now + Math.max(3200, pad + 800);
+      this.mirrorNextFireAt += pad;
+      this.mirrorWarningStartAt += pad;
+      if (this.mirrorAnnounceUntil > now) {
+        this.mirrorAnnounceUntil += pad;
+      }
     }
     if (this.lives <= 0) {
       this.endGame(
@@ -1442,6 +1462,7 @@ export class Game {
    */
   private onGlobalKeyDown(e: KeyboardEvent): void {
     if (!this.running || this.gameOver) return;
+    if (this.isLifeLostFrozen()) return;
 
     const code = e.code;
     const key = e.key;
@@ -1472,7 +1493,10 @@ export class Game {
 
   update(): void {
     const dt = Math.min(this.clock.getDelta(), 0.05);
-    if (this.running && !this.gameOver) {
+    const lifeFrozen =
+      this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
+
+    if (this.running && !this.gameOver && !lifeFrozen) {
       this.tickMirrorRealitySystem(performance.now());
 
       const diffRamp = 1 + this.aliveTime * 0.02;
@@ -1570,15 +1594,20 @@ export class Game {
       }
     }
 
-    this.updateThiefAvatar(dt);
+    const simDt = lifeFrozen ? 0 : dt;
+    this.updateThiefAvatar(simDt);
 
     const warnP = this.getMirrorWarningProgress();
-    this.mirrorCamRoll = THREE.MathUtils.lerp(this.mirrorCamRoll, 0, Math.min(1, dt * 3.8));
+    this.mirrorCamRoll = THREE.MathUtils.lerp(this.mirrorCamRoll, 0, Math.min(1, simDt * 3.8));
     const warnOsc = warnP * 0.055 * Math.sin(this.aliveTime * 36 + warnP * 6.28);
 
     const t = this.running ? this.aliveTime : performance.now() * 0.0004;
     const bob = Math.sin(t * 6) * 0.04;
-    this.camera.position.x = THREE.MathUtils.lerp(this.camera.position.x, this.player.position.x * 0.28, dt * 3);
+    this.camera.position.x = THREE.MathUtils.lerp(
+      this.camera.position.x,
+      this.player.position.x * 0.28,
+      simDt * 3,
+    );
     this.camera.position.y = 3.2 + bob + (this.chase > 0.65 ? this.chase * 0.35 : 0);
     this.camera.lookAt(
       this.player.position.x * 0.15,
@@ -1623,6 +1652,7 @@ export class Game {
     this.vfxStumblePulseUntil = 0;
     this.nearMissFlashUntil = 0;
     this.lifeLostBannerUntil = 0;
+    this.lifeLostFreezeUntil = 0;
     this.mirrorProtocolImmunityUntil = 0;
     this.mirrorCamRoll = 0;
     this.mirrorLayer = false;

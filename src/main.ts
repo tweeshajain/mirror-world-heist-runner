@@ -22,6 +22,7 @@ const sysErrDetail = document.getElementById("syserr-detail")!;
 const sysErrCount = document.getElementById("syserr-count")!;
 const sysErrHex = document.getElementById("syserr-hex")!;
 const lifeLostBanner = document.getElementById("life-lost-banner")!;
+const shatterOverlay = document.getElementById("shatter-overlay") as HTMLDivElement | null;
 
 const SYS_ERR_LINES = [
   "CONTROL BUS SIGNATURE DRIFT",
@@ -33,6 +34,56 @@ const SYS_ERR_LINES = [
 const game = new Game(canvas);
 
 let prevNearMiss = 0;
+let prevLifeLostFrozen = false;
+
+function ensureShatterShards(): void {
+  const root = shatterOverlay;
+  if (!root || root.dataset.built === "1") return;
+  root.dataset.built = "1";
+  const cols = 7;
+  const rows = 5;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const shard = document.createElement("div");
+      shard.className = "shatter-shard";
+      shard.style.left = `${(c / cols) * 100}%`;
+      shard.style.top = `${(r / rows) * 100}%`;
+      shard.style.width = `${100 / cols}%`;
+      shard.style.height = `${100 / rows}%`;
+      const cx = (c + 0.5) / cols - 0.5;
+      const cy = (r + 0.5) / rows - 0.5;
+      const mag = 40 + Math.random() * 100;
+      const tx = `${(cx * mag + (Math.random() - 0.5) * 36).toFixed(1)}px`;
+      const ty = `${(cy * mag + (Math.random() - 0.5) * 36).toFixed(1)}px`;
+      const rot = `${((Math.random() - 0.5) * 70 + cx * 25).toFixed(1)}deg`;
+      shard.style.setProperty("--sj-tx", tx);
+      shard.style.setProperty("--sj-ty", ty);
+      shard.style.setProperty("--sj-rot", rot);
+      shard.style.setProperty("--sj-delay", `${Math.random() * 0.1}s`);
+      root.appendChild(shard);
+    }
+  }
+}
+
+function syncLifeLostShatter(frozen: boolean): void {
+  document.body.classList.toggle("life-lost-frozen", frozen);
+  if (!shatterOverlay) return;
+  if (frozen) {
+    ensureShatterShards();
+    shatterOverlay.hidden = false;
+    shatterOverlay.setAttribute("aria-hidden", "false");
+    if (!prevLifeLostFrozen) {
+      shatterOverlay.classList.remove("shatter-active");
+      void shatterOverlay.offsetWidth;
+      shatterOverlay.classList.add("shatter-active");
+    }
+  } else {
+    shatterOverlay.hidden = true;
+    shatterOverlay.setAttribute("aria-hidden", "true");
+    shatterOverlay.classList.remove("shatter-active");
+  }
+  prevLifeLostFrozen = frozen;
+}
 
 cWrap.addEventListener(
   "pointerdown",
@@ -58,6 +109,13 @@ function wipeScreenJuice(): void {
   lifeLostBanner.hidden = true;
   lifeLostBanner.textContent = "";
   livesEl.classList.remove("life-lost-pulse");
+  document.body.classList.remove("life-lost-frozen");
+  prevLifeLostFrozen = false;
+  if (shatterOverlay) {
+    shatterOverlay.hidden = true;
+    shatterOverlay.setAttribute("aria-hidden", "true");
+    shatterOverlay.classList.remove("shatter-active");
+  }
 }
 
 function livesLabel(n: number): string {
@@ -129,6 +187,14 @@ function setHud(): void {
 }
 
 function applyScreenVfx(): void {
+  if (game.isLifeLostFrozen()) {
+    document.documentElement.style.setProperty("--vfx-glitch", "0");
+    document.documentElement.style.setProperty("--vfx-danger", "0");
+    document.documentElement.style.setProperty("--vfx-invert", "0");
+    canvas.style.transform = "";
+    cWrap.classList.remove("vfx-glitching");
+    return;
+  }
   const g = game.getVfxMirrorGlitch();
   const d = game.getVfxDangerChroma();
   const inv = game.getVfxInvertWarp();
@@ -174,6 +240,7 @@ function tick(): void {
   game.update();
   game.render();
   setHud();
+  syncLifeLostShatter(game.isLifeLostFrozen());
   applyScreenVfx();
   const { over, reason } = game.getGameOver();
   if (over && startScreen.hidden) {
