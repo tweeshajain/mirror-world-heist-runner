@@ -41,9 +41,9 @@ const LIFE_LOST_FREEZE_MS = 1000;
 const JETPACK_SCORE_TRIGGER = 4000;
 /** If the first jetpack pickup is missed, a second pickup can be scheduled after this score. */
 const JETPACK_RETRY_SCORE_TRIGGER = 5000;
-/** Jetpack pickup spawns at a random wall-clock delay in this range after score crosses the trigger. */
-const JETPACK_SPAWN_DELAY_MIN_MS = 2200;
-const JETPACK_SPAWN_DELAY_MAX_MS = 5600;
+/** Wall-clock delay (few seconds) after score crosses a gate before jetpack / mystery pickups spawn. */
+const PICKUP_SPAWN_DELAY_MIN_MS = 450;
+const PICKUP_SPAWN_DELAY_MAX_MS = 3200;
 const JETPACK_FLY_DURATION_MS = 5000;
 const JETPACK_LAND_IMMUNITY_MS = 2000;
 const JETPACK_FLY_HEIGHT = 3.35;
@@ -57,12 +57,12 @@ const COIN_SPAWN_INTERVAL_MS = 380;
 const MYSTERY_BOX_SCORE_TRIGGER = 7000;
 /** If the first mystery box is missed, a second pickup can be scheduled after this score. */
 const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
-/** Wall-clock delay before the pickup appears (after score crosses each trigger); keep within a few seconds. */
-const MYSTERY_BOX_SPAWN_DELAY_MIN_MS = 450;
-const MYSTERY_BOX_SPAWN_DELAY_MAX_MS = 3200;
 const MYSTERY_BOX_PICKUP_Z_OFFSET = 58;
 /** Collecting the box flips the entire view for this long (game keeps running). */
 const MYSTERY_FLIP_DURATION_MS = 5000;
+/** Obstacle immunity: first window right as upside-down starts; second right after view resets. */
+const MYSTERY_FLIP_IMMUNITY_MS = 2000;
+const MYSTERY_POST_FLIP_IMMUNITY_MS = 2000;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -257,6 +257,12 @@ export class Game {
   private mysteryBoxPickup: MysteryBoxPickup | null = null;
   /** Until this time (exclusive), full-screen CSS flip is active. */
   private mysteryScreenFlipUntil = 0;
+  /** Obstacle hits ignored for this long after mystery flip begins. */
+  private mysteryFlipImmunityUntil = 0;
+  /** Obstacle hits ignored for this long after upside-down ends (view “resets”). */
+  private mysteryPostFlipImmunityUntil = 0;
+  /** For one-shot post-flip immunity when `mysteryScreenFlipUntil` elapses. */
+  private prevMysteryFlipActive = false;
 
   private running = false;
   private gameOver = false;
@@ -414,6 +420,8 @@ export class Game {
     if (this.jetpackNextCoinAtMs > t0) this.jetpackNextCoinAtMs = bump(this.jetpackNextCoinAtMs);
     if (this.mysteryBoxSpawnAtMs > t0) this.mysteryBoxSpawnAtMs = bump(this.mysteryBoxSpawnAtMs);
     if (this.mysteryScreenFlipUntil > t0) this.mysteryScreenFlipUntil = bump(this.mysteryScreenFlipUntil);
+    if (this.mysteryFlipImmunityUntil > t0) this.mysteryFlipImmunityUntil = bump(this.mysteryFlipImmunityUntil);
+    if (this.mysteryPostFlipImmunityUntil > t0) this.mysteryPostFlipImmunityUntil = bump(this.mysteryPostFlipImmunityUntil);
     if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
     if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
     if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
@@ -557,6 +565,9 @@ export class Game {
       this.mysteryBoxPickup = null;
     }
     this.mysteryScreenFlipUntil = 0;
+    this.mysteryFlipImmunityUntil = 0;
+    this.mysteryPostFlipImmunityUntil = 0;
+    this.prevMysteryFlipActive = false;
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -1714,9 +1725,13 @@ export class Game {
     this.mysteryBoxPickup = null;
     const now = performance.now();
     this.mysteryScreenFlipUntil = now + MYSTERY_FLIP_DURATION_MS;
+    this.mysteryFlipImmunityUntil = now + MYSTERY_FLIP_IMMUNITY_MS;
     this.mysteryBoxCollectedThisRun = true;
     this.mysteryBoxUsedThisRun = true;
-    this.announce("MYSTERY — UPSIDE DOWN 5s · controls unchanged · survive", 5200);
+    this.announce(
+      "MYSTERY — UPSIDE DOWN 5s · 2s obstacle immunity now, 2s again when view resets · controls unchanged",
+      5400,
+    );
   }
 
   private updateMysteryBoxPickupDespawn(): void {
@@ -2034,7 +2049,12 @@ export class Game {
     if (o.hit) return;
     o.hit = true;
     const nowHit = performance.now();
-    if (nowHit < this.mirrorProtocolImmunityUntil || nowHit < this.jetpackPostImmunityUntil) {
+    if (
+      nowHit < this.mirrorProtocolImmunityUntil ||
+      nowHit < this.jetpackPostImmunityUntil ||
+      nowHit < this.mysteryFlipImmunityUntil ||
+      nowHit < this.mysteryPostFlipImmunityUntil
+    ) {
       return;
     }
     this.lives -= 1;
@@ -2203,24 +2223,24 @@ export class Game {
 
       if (!this.jetpackUsedThisRun && this.jetpackSpawnAtMs === 0 && !this.jetpackPickup && this.jetpackFlyingUntil === 0) {
         if (this.jetpackPickupSpawnsThisRun === 0 && this.score >= JETPACK_SCORE_TRIGGER) {
-          this.jetpackSpawnAtMs = nowTick + randRange(JETPACK_SPAWN_DELAY_MIN_MS, JETPACK_SPAWN_DELAY_MAX_MS);
+          this.jetpackSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
         } else if (
           this.jetpackPickupSpawnsThisRun === 1 &&
           !this.jetpackEnteredFlightThisRun &&
           this.score >= JETPACK_RETRY_SCORE_TRIGGER
         ) {
-          this.jetpackSpawnAtMs = nowTick + randRange(JETPACK_SPAWN_DELAY_MIN_MS, JETPACK_SPAWN_DELAY_MAX_MS);
+          this.jetpackSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
         }
       }
       if (!this.mysteryBoxUsedThisRun && this.mysteryBoxSpawnAtMs === 0 && !this.mysteryBoxPickup && !this.isJetpackFlying()) {
         if (this.mysteryBoxPickupSpawnsThisRun === 0 && this.score >= MYSTERY_BOX_SCORE_TRIGGER) {
-          this.mysteryBoxSpawnAtMs = nowTick + randRange(MYSTERY_BOX_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_SPAWN_DELAY_MAX_MS);
+          this.mysteryBoxSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
         } else if (
           this.mysteryBoxPickupSpawnsThisRun === 1 &&
           !this.mysteryBoxCollectedThisRun &&
           this.score >= MYSTERY_BOX_RETRY_SCORE_TRIGGER
         ) {
-          this.mysteryBoxSpawnAtMs = nowTick + randRange(MYSTERY_BOX_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_SPAWN_DELAY_MAX_MS);
+          this.mysteryBoxSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
         }
       }
       if (
@@ -2282,6 +2302,17 @@ export class Game {
       this.player.position.z - 10,
     );
     this.camera.rotateZ(this.mirrorCamRoll + warnOsc);
+
+    if (this.running && !this.gameOver) {
+      const nw = performance.now();
+      const flipOn = nw < this.mysteryScreenFlipUntil;
+      if (this.prevMysteryFlipActive && !flipOn) {
+        this.mysteryPostFlipImmunityUntil = nw + MYSTERY_POST_FLIP_IMMUNITY_MS;
+      }
+      this.prevMysteryFlipActive = flipOn;
+    } else if (!this.running) {
+      this.prevMysteryFlipActive = false;
+    }
   }
 
   private endGame(reason: string): void {
@@ -2305,6 +2336,9 @@ export class Game {
       this.mysteryBoxPickup = null;
     }
     this.mysteryScreenFlipUntil = 0;
+    this.mysteryFlipImmunityUntil = 0;
+    this.mysteryPostFlipImmunityUntil = 0;
+    this.prevMysteryFlipActive = false;
 
     document.body.classList.remove("mirror-warning", "mirror-flash");
     this.mirrorAnnounceUntil = 0;
