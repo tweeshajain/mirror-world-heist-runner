@@ -19,8 +19,8 @@ const OBSTACLE_TIGHTEN_PER_SCORE_TIER = 0.55;
 const BLOCK_CLUSTER_D = 9.5;
 /** Each time floor(score / this) increases, run speed bumps (target + max cap). */
 const SCORE_SPEED_MILESTONE = 2000;
-const SPEED_BONUS_PER_MILESTONE = 2.35;
-const VMAX_BONUS_PER_MILESTONE = 1.35;
+const SPEED_BONUS_PER_MILESTONE = 2.85;
+const VMAX_BONUS_PER_MILESTONE = 1.55;
 const MAX_SPEED_MILESTONES = 14;
 
 /** Mirror Reality System: fixed cadence + telegraph (see `MIRROR_*`). */
@@ -63,6 +63,16 @@ function gridIndexToLane(i: 0 | 1 | 2): (typeof LANES)[number] {
   return LANES[i];
 }
 
+/** Fisher–Yates shuffle in-place. */
+function shuffleInPlace<T>(arr: T[]): void {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = arr[i]!;
+    arr[i] = arr[j]!;
+    arr[j] = t;
+  }
+}
+
 export class Game {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
@@ -89,7 +99,7 @@ export class Game {
   private targetLane = 1;
   private laneBlend = 0;
 
-  private velocityZ = 14;
+  private velocityZ = 15.5;
   private distance = 0;
   private aliveTime = 0;
   private score = 0;
@@ -102,6 +112,8 @@ export class Game {
   private chunks: RoadChunk[] = [];
   private obstacles: Obstacle[] = [];
   private nextObstacleAt = 26;
+  /** Shuffled queue of lanes (3× each) so no lane is starved long-term. */
+  private laneFairnessBag: (typeof LANES)[number][] = [];
 
   private invertLR = false;
   private swapJumpSlide = false;
@@ -300,7 +312,7 @@ export class Game {
   }
 
   private resetSession(): void {
-    this.velocityZ = 14;
+    this.velocityZ = 15.5;
     this.distance = 0;
     this.aliveTime = 0;
     this.score = 0;
@@ -342,6 +354,7 @@ export class Game {
     for (const c of this.chunks) this.worldGroup.remove(c.group);
     this.chunks.length = 0;
     this.nextObstacleAt = 26;
+    this.laneFairnessBag.length = 0;
     this.seedWorld();
     this.applyVisualLayer(false);
   }
@@ -795,7 +808,7 @@ export class Game {
     const lateralVel = sim ? (px - this.prevPlayerWorldX) / Math.max(dt, 1e-4) : 0;
     this.prevPlayerWorldX = px;
 
-    const speedN = THREE.MathUtils.clamp((this.velocityZ - 10) / 26, 0, 1);
+    const speedN = THREE.MathUtils.clamp((this.velocityZ - 10) / 29, 0, 1);
     const laneSlide = sim
       ? THREE.MathUtils.clamp(
           Math.abs(px - this.lastTrailX) / (LANE_WIDTH * 0.45) + Math.min(1.2, Math.abs(lateralVel) * 0.03),
@@ -1191,6 +1204,16 @@ export class Game {
     }
   }
 
+  /** Next spawn lane: each of −1/0/1 appears equally often across a bag cycle. */
+  private takeFairSpawnLane(): (typeof LANES)[number] {
+    if (this.laneFairnessBag.length === 0) {
+      const bag: (typeof LANES)[number][] = [...LANES, ...LANES, ...LANES];
+      shuffleInPlace(bag);
+      this.laneFairnessBag = bag;
+    }
+    return this.laneFairnessBag.pop()!;
+  }
+
   private spawnObstacle(): void {
     const z = -SPAWN_AHEAD - this.distance;
     const dNew = this.distance;
@@ -1200,8 +1223,6 @@ export class Game {
     else if (roll < 0.69) kind = "low";
     else kind = "high";
 
-    let lanePick = LANES[Math.floor(Math.random() * 3)];
-
     const blockLanesInCluster = new Set<0 | 1 | 2>();
     for (const o of this.obstacles) {
       if (o.kind !== "block") continue;
@@ -1210,12 +1231,20 @@ export class Game {
       blockLanesInCluster.add(laneToGridIndex(o.lane));
     }
 
+    let lanePick = this.takeFairSpawnLane();
+    if (kind === "block" && blockLanesInCluster.size === 2) {
+      const free = ([0, 1, 2] as const).find((i) => !blockLanesInCluster.has(i))!;
+      const must = gridIndexToLane(free);
+      if (lanePick !== must) {
+        const ins = Math.floor(Math.random() * (this.laneFairnessBag.length + 1));
+        this.laneFairnessBag.splice(ins, 0, lanePick);
+        lanePick = must;
+      }
+    }
+
     if (kind === "block") {
       if (blockLanesInCluster.size >= 3) {
         kind = Math.random() < 0.55 ? "low" : "high";
-      } else if (blockLanesInCluster.size === 2) {
-        const free = ([0, 1, 2] as const).find((i) => !blockLanesInCluster.has(i))!;
-        lanePick = gridIndexToLane(free);
       }
     }
 
@@ -1445,10 +1474,10 @@ export class Game {
         Math.floor(this.score / SCORE_SPEED_MILESTONE),
       );
       const scoreSpeedBoost = scoreMilestones * SPEED_BONUS_PER_MILESTONE;
-      const vmax = 42 + scoreMilestones * VMAX_BONUS_PER_MILESTONE;
-      const targetV = 14.6 + this.aliveTime * 0.72 * diffRamp + scoreSpeedBoost;
-      this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * 1.55);
-      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, 10.5, vmax);
+      const vmax = 46 + scoreMilestones * VMAX_BONUS_PER_MILESTONE;
+      const targetV = 16.4 + this.aliveTime * 0.84 * diffRamp + scoreSpeedBoost;
+      this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * 1.72);
+      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, 11, vmax);
 
       this.distance += this.velocityZ * dt;
       this.aliveTime += dt;
