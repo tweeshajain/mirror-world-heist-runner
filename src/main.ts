@@ -22,6 +22,12 @@ const sysErrCount = document.getElementById("syserr-count")!;
 const sysErrHex = document.getElementById("syserr-hex")!;
 const lifeLostBanner = document.getElementById("life-lost-banner")!;
 const shatterOverlay = document.getElementById("shatter-overlay") as HTMLDivElement | null;
+const pauseRow = document.getElementById("pause-row") as HTMLDivElement;
+const btnPause = document.getElementById("btn-pause") as HTMLButtonElement;
+const btnResume = document.getElementById("btn-resume") as HTMLButtonElement;
+const jetpackHud = document.getElementById("jetpack-hud") as HTMLDivElement;
+const mysteryBoxHud = document.getElementById("mystery-box-hud") as HTMLDivElement;
+const mysteryFlipHud = document.getElementById("mystery-flip-hud") as HTMLDivElement;
 
 const SYS_ERR_LINES = [
   "CONTROL BUS SIGNATURE DRIFT",
@@ -115,6 +121,13 @@ function wipeScreenJuice(): void {
     shatterOverlay.setAttribute("aria-hidden", "true");
     shatterOverlay.classList.remove("shatter-active");
   }
+  document.documentElement.classList.remove("mystery-screen-flip");
+  jetpackHud.hidden = true;
+  jetpackHud.textContent = "";
+  mysteryBoxHud.hidden = true;
+  mysteryBoxHud.textContent = "";
+  mysteryFlipHud.hidden = true;
+  mysteryFlipHud.textContent = "";
 }
 
 function livesLabel(n: number): string {
@@ -141,6 +154,14 @@ function setHud(): void {
   layerBadge.textContent = mirror ? "MIRROR" : "REAL";
   layerBadge.className = mirror ? "layer-mirror" : "layer-real";
   mirrorHint.textContent = live ? game.getMirrorHint() : "";
+
+  const jetLine = live ? game.getJetpackHudLine() : "";
+  jetpackHud.hidden = !live || !jetLine;
+  jetpackHud.textContent = jetLine;
+
+  const mysteryPickLine = live ? game.getMysteryPickupHudLine() : "";
+  mysteryBoxHud.hidden = !live || !mysteryPickLine;
+  mysteryBoxHud.textContent = mysteryPickLine;
 
   const warn = live ? game.getMirrorWarningProgress() : 0;
   document.documentElement.style.setProperty("--mirror-warn", String(warn));
@@ -169,7 +190,26 @@ function setHud(): void {
   }
 
   document.body.classList.toggle("game-running", live);
+  document.body.classList.toggle("game-paused", live && game.isUserPaused());
+  document.documentElement.classList.toggle("mystery-screen-flip", live && game.isMysteryScreenFlipped());
   cWrap.setAttribute("aria-hidden", live ? "false" : "true");
+
+  const flipSec = live ? game.getMysteryFlipSecondsRemaining() : 0;
+  if (flipSec > 0.02) {
+    mysteryFlipHud.hidden = false;
+    mysteryFlipHud.textContent = `UPSIDE DOWN — ${flipSec.toFixed(1)}s · keep running`;
+  } else {
+    mysteryFlipHud.hidden = true;
+    mysteryFlipHud.textContent = "";
+  }
+
+  const paused = live && game.isUserPaused();
+  const lifeFrozen = live && game.isLifeLostFrozen();
+  pauseRow.hidden = !live;
+  btnPause.hidden = paused;
+  btnResume.hidden = !paused;
+  btnPause.disabled = lifeFrozen;
+  btnPause.title = lifeFrozen ? "Unavailable during life-lost beat" : "Pause run";
   quickTip.hidden = !live;
   quickTip.setAttribute("aria-hidden", live ? "false" : "true");
   const nm = game.getNearMissFlash();
@@ -185,7 +225,7 @@ function setHud(): void {
 }
 
 function applyScreenVfx(): void {
-  if (game.isLifeLostFrozen()) {
+  if (game.isLifeLostFrozen() || game.isUserPaused() || game.isMysteryScreenFlipped()) {
     document.documentElement.style.setProperty("--vfx-glitch", "0");
     document.documentElement.style.setProperty("--vfx-danger", "0");
     document.documentElement.style.setProperty("--vfx-invert", "0");
@@ -232,6 +272,15 @@ btnRetry.addEventListener("click", () => {
   wipeScreenJuice();
   prevNearMiss = 0;
   focusPlaySurface();
+});
+
+btnPause.addEventListener("click", () => {
+  game.pause();
+});
+
+btnResume.addEventListener("click", () => {
+  game.resume();
+  canvas.focus({ preventScroll: true });
 });
 
 function tick(): void {

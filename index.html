@@ -16,13 +16,23 @@
           <span id="score">0</span>
           <span id="lives" class="lives-hud" aria-label="Lives remaining">♥ ♥ ♥</span>
           <span id="layer-badge" class="layer-real">REAL</span>
+          <div id="pause-row" class="pause-row" hidden>
+            <button id="btn-pause" type="button" class="hud-btn">Pause</button>
+            <button id="btn-resume" type="button" class="hud-btn" hidden>Resume</button>
+          </div>
         </div>
         <div id="mirror-warn-bar" aria-hidden="true"></div>
+        <div id="jetpack-hud" class="powerup-hud powerup-hud--jetpack" hidden role="status" aria-live="polite"></div>
+        <div id="mystery-box-hud" class="powerup-hud powerup-hud--mystery" hidden role="status" aria-live="polite"></div>
+        <div id="mystery-flip-hud" class="mystery-flip-hud" hidden role="status" aria-live="assertive"></div>
         <div id="mirror-hint" aria-live="polite"></div>
         <p id="quick-tip">
           <strong>3 lives</strong> — each hit costs one (big warning on screen) · <strong>←→↑↓</strong> or WASD ·
-          <strong>Mirror</strong> flips controls every 15s (watch the 1s cue). At <strong>4000</strong> pts a jetpack
-          appears 3s later — fly, grab lane coins (+100), then 2s immunity.
+          <strong>Mirror</strong> flips controls every 15s (watch the 1s cue).
+          <strong>Jetpack:</strong> after you pass <strong>4000</strong> score, a pickup spawns once a few seconds later — fly,
+          grab lane coins (+100), then get 2s landing immunity.
+          <strong>Mystery box:</strong> after <strong>7000</strong> score, a separate pickup can spawn on its own timer — touch it
+          and the whole screen flips upside down for 5s while the run continues.
         </p>
       </div>
       <div id="start-screen">
@@ -30,7 +40,8 @@
         <p class="tagline">
           <strong>3 lives:</strong> each obstacle you fail to dodge costs one. You run three lanes, jump or slide hazards,
           and survive while <strong>Mirror Reality</strong> flips controls — telegraphed 1s before it hits.
-          Cross <strong>4000</strong> score for a timed jetpack pickup, coin haul while airborne, and a safe landing window.
+          Past <strong>4000</strong> score, a <strong>jetpack</strong> pickup appears once after a short random delay (not tied to anything else).
+          Past <strong>7000</strong>, a <strong>mystery box</strong> can appear once on its own delay — unrelated to the jetpack — and inverts the whole screen for five seconds if you grab it.
         </p>
         <ul class="controls">
           <li><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> / <kbd>→</kbd> — lanes (tap each lane change)</li>

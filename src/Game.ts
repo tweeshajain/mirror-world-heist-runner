@@ -39,13 +39,24 @@ const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
 const LIFE_LOST_FREEZE_MS = 1000;
 
 const JETPACK_SCORE_TRIGGER = 4000;
-const JETPACK_SPAWN_DELAY_MS = 3000;
+/** Jetpack pickup spawns at a random wall-clock delay in this range after score crosses the trigger. */
+const JETPACK_SPAWN_DELAY_MIN_MS = 2200;
+const JETPACK_SPAWN_DELAY_MAX_MS = 5600;
 const JETPACK_FLY_DURATION_MS = 5000;
 const JETPACK_LAND_IMMUNITY_MS = 2000;
 const JETPACK_FLY_HEIGHT = 3.35;
 const JETPACK_PICKUP_Z_OFFSET = 48;
 const COIN_SCORE_BONUS = 100;
 const COIN_SPAWN_INTERVAL_MS = 380;
+
+/** After this score, a mystery box spawns once per run (wall-clock delay below). */
+const MYSTERY_BOX_SCORE_TRIGGER = 7000;
+/** Independent of jetpack timing: random delay in this range after score crosses the trigger. */
+const MYSTERY_BOX_SPAWN_DELAY_MIN_MS = 2600;
+const MYSTERY_BOX_SPAWN_DELAY_MAX_MS = 6400;
+const MYSTERY_BOX_PICKUP_Z_OFFSET = 58;
+/** Collecting the box flips the entire view for this long (game keeps running). */
+const MYSTERY_FLIP_DURATION_MS = 5000;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -77,6 +88,39 @@ interface FlightCoin {
   lane: (typeof LANES)[number];
   z: number;
   collected: boolean;
+}
+
+interface MysteryBoxPickup {
+  mesh: THREE.Group;
+  lane: (typeof LANES)[number];
+  z: number;
+}
+
+function createMysteryQuestionTexture(): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 128;
+  const ctx = c.getContext("2d");
+  if (ctx) {
+    const g = ctx.createLinearGradient(0, 0, 128, 128);
+    g.addColorStop(0, "#4a1a7a");
+    g.addColorStop(0.5, "#2a0a52");
+    g.addColorStop(1, "#1a0638");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.strokeStyle = "rgba(255, 220, 100, 0.95)";
+    ctx.lineWidth = 10;
+    ctx.strokeRect(14, 14, 100, 100);
+    ctx.fillStyle = "#ffe566";
+    ctx.font = "bold 78px system-ui,Segoe UI,sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("?", 64, 66);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
 }
 
 function randRange(a: number, b: number): number {
@@ -191,9 +235,19 @@ export class Game {
   private flightCoins: FlightCoin[] = [];
   private jetpackNextCoinAtMs = 0;
 
+  private mysteryBoxSpawnAtMs = 0;
+  private mysteryBoxUsedThisRun = false;
+  private mysteryBoxPickup: MysteryBoxPickup | null = null;
+  /** Until this time (exclusive), full-screen CSS flip is active. */
+  private mysteryScreenFlipUntil = 0;
+
   private running = false;
   private gameOver = false;
   private gameOverReason = "";
+
+  /** Player-requested pause: no sim, no input; wall clocks are shifted on resume. */
+  private userPaused = false;
+  private pauseStartedAt = 0;
 
   private clock = new THREE.Clock();
   private resizeBound = () => this.onResize();
@@ -280,7 +334,7 @@ export class Game {
         const dt = performance.now() - this.touchStart.t;
         this.touchStart = null;
         if (!this.running || this.gameOver) return;
-        if (this.isLifeLostFrozen()) return;
+        if (this.isLifeLostFrozen() || this.userPaused) return;
         const min = 28;
         if (dt > 600) return;
         if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > min) {
@@ -308,6 +362,47 @@ export class Game {
     return this.running && !this.gameOver;
   }
 
+  isUserPaused(): boolean {
+    return this.userPaused;
+  }
+
+  pause(): void {
+    if (!this.isRunning() || this.userPaused) return;
+    this.userPaused = true;
+    this.pauseStartedAt = performance.now();
+  }
+
+  resume(): void {
+    if (!this.userPaused) return;
+    const slip = performance.now() - this.pauseStartedAt;
+    const t0 = this.pauseStartedAt;
+    this.shiftWallClockDeadlinesAfterPause(t0, slip);
+    this.userPaused = false;
+    this.pauseStartedAt = 0;
+    this.clock.getDelta();
+  }
+
+  /** Active deadlines in the future at `t0` are pushed by `slip` so real time spent paused does not count. */
+  private shiftWallClockDeadlinesAfterPause(t0: number, slip: number): void {
+    const bump = (deadline: number) => deadline + slip;
+    if (this.mirrorNextFireAt > t0) this.mirrorNextFireAt = bump(this.mirrorNextFireAt);
+    if (this.mirrorWarningStartAt > t0) this.mirrorWarningStartAt = bump(this.mirrorWarningStartAt);
+    if (this.mirrorAnnounceUntil > t0) this.mirrorAnnounceUntil = bump(this.mirrorAnnounceUntil);
+    if (this.lifeLostFreezeUntil > t0) this.lifeLostFreezeUntil = bump(this.lifeLostFreezeUntil);
+    if (this.lifeLostBannerUntil > t0) this.lifeLostBannerUntil = bump(this.lifeLostBannerUntil);
+    if (this.mirrorProtocolImmunityUntil > t0) this.mirrorProtocolImmunityUntil = bump(this.mirrorProtocolImmunityUntil);
+    if (this.jetpackPostImmunityUntil > t0) this.jetpackPostImmunityUntil = bump(this.jetpackPostImmunityUntil);
+    if (this.jetpackSpawnAtMs > t0) this.jetpackSpawnAtMs = bump(this.jetpackSpawnAtMs);
+    if (this.jetpackFlyingUntil > t0) this.jetpackFlyingUntil = bump(this.jetpackFlyingUntil);
+    if (this.jetpackNextCoinAtMs > t0) this.jetpackNextCoinAtMs = bump(this.jetpackNextCoinAtMs);
+    if (this.mysteryBoxSpawnAtMs > t0) this.mysteryBoxSpawnAtMs = bump(this.mysteryBoxSpawnAtMs);
+    if (this.mysteryScreenFlipUntil > t0) this.mysteryScreenFlipUntil = bump(this.mysteryScreenFlipUntil);
+    if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
+    if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
+    if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
+    if (this.nearMissFlashUntil > t0) this.nearMissFlashUntil = bump(this.nearMissFlashUntil);
+  }
+
   getScore(): number {
     return Math.floor(this.score);
   }
@@ -333,34 +428,55 @@ export class Game {
     return this.mirrorLayer;
   }
 
+  /** Mirror Reality telegraph / announcements only (not jetpack or mystery box). */
   getMirrorHint(): string {
     if (!this.isRunning()) return "";
-    const jet = this.getJetpackHudHint();
+    if (this.userPaused) return "";
     const now = performance.now();
     const w = this.getMirrorWarningProgress();
     if (w > 0 && this.mirrorNextFireAt > 0) {
       const sec = Math.max(0, (this.mirrorNextFireAt - now) / 1000);
-      const m = `MIRROR REALITY — ${sec.toFixed(1)}s`;
-      return jet ? `${jet} · ${m}` : m;
+      return `MIRROR REALITY — ${sec.toFixed(1)}s`;
     }
-    if (now < this.mirrorAnnounceUntil) return jet ? `${jet} · ${this.lastMirrorMessage}` : this.lastMirrorMessage;
-    if (jet) return jet;
+    if (now < this.mirrorAnnounceUntil) return this.lastMirrorMessage;
     return "";
   }
 
-  /** HUD line while jetpack is active or pickup is waiting ahead. */
-  private getJetpackHudHint(): string {
+  /** Jetpack-only HUD (flight timer, pickup cue). Shown separately from mystery box. */
+  getJetpackHudLine(): string {
     if (!this.isRunning()) return "";
+    if (this.userPaused) return "";
     if (this.isJetpackFlying()) {
       const s = Math.max(0, (this.jetpackFlyingUntil - performance.now()) / 1000);
-      return `JETPACK ${s.toFixed(1)}s · coins +${COIN_SCORE_BONUS}`;
+      return `Jetpack: ${s.toFixed(1)}s left · lane coins +${COIN_SCORE_BONUS}`;
     }
-    if (this.jetpackPickup) return "Grab the jetpack ahead";
+    if (this.jetpackPickup) return "Jetpack pickup ahead";
+    return "";
+  }
+
+  /** Mystery box pickup cue only (upside-down countdown uses `#mystery-flip-hud`). */
+  getMysteryPickupHudLine(): string {
+    if (!this.isRunning()) return "";
+    if (this.userPaused) return "";
+    if (this.mysteryBoxPickup) return "Mystery box ahead";
     return "";
   }
 
   private isJetpackFlying(): boolean {
     return this.jetpackFlyingUntil > 0 && performance.now() < this.jetpackFlyingUntil;
+  }
+
+  /** Full 180° screen flip from mystery box (HUD + canvas); gameplay continues. */
+  isMysteryScreenFlipped(): boolean {
+    return this.isRunning() && performance.now() < this.mysteryScreenFlipUntil;
+  }
+
+  /** Seconds left for upside-down effect; 0 if inactive. */
+  getMysteryFlipSecondsRemaining(): number {
+    if (!this.isRunning()) return 0;
+    const now = performance.now();
+    if (now >= this.mysteryScreenFlipUntil) return 0;
+    return (this.mysteryScreenFlipUntil - now) / 1000;
   }
 
   getGameOver(): { over: boolean; reason: string } {
@@ -374,6 +490,8 @@ export class Game {
   }
 
   private resetSession(): void {
+    this.userPaused = false;
+    this.pauseStartedAt = 0;
     this.velocityZ = 18.5;
     this.distance = 0;
     this.aliveTime = 0;
@@ -411,6 +529,13 @@ export class Game {
     this.jetpackFlyingUntil = 0;
     this.clearFlightCoins();
     this.jetpackNextCoinAtMs = 0;
+    this.mysteryBoxSpawnAtMs = 0;
+    this.mysteryBoxUsedThisRun = false;
+    if (this.mysteryBoxPickup) {
+      this.worldGroup.remove(this.mysteryBoxPickup.mesh);
+      this.mysteryBoxPickup = null;
+    }
+    this.mysteryScreenFlipUntil = 0;
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -443,7 +568,7 @@ export class Game {
 
   /** 0 = none, 0–1 = last-second telegraph (rises over the warning window). */
   getMirrorWarningProgress(): number {
-    if (!this.running || this.gameOver) return 0;
+    if (!this.running || this.gameOver || this.userPaused) return 0;
     const now = performance.now();
     if (now < this.mirrorWarningStartAt || now >= this.mirrorNextFireAt) return 0;
     return THREE.MathUtils.clamp((now - this.mirrorWarningStartAt) / MIRROR_WARN_MS, 0, 1);
@@ -451,7 +576,7 @@ export class Game {
 
   /** Seconds until Mirror Reality fires; 0 outside the 1s warning window. */
   getMirrorSecondsRemaining(): number {
-    if (!this.running || this.gameOver) return 0;
+    if (!this.running || this.gameOver || this.userPaused) return 0;
     const now = performance.now();
     if (now < this.mirrorWarningStartAt || now >= this.mirrorNextFireAt) return 0;
     return Math.max(0, (this.mirrorNextFireAt - now) / 1000);
@@ -1340,46 +1465,125 @@ export class Game {
     const lane = LANES[Math.floor(Math.random() * 3)]!;
     const z = -JETPACK_PICKUP_Z_OFFSET - this.distance;
     const g = new THREE.Group();
-    g.position.set(lane * LANE_WIDTH, 1.05, z);
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.28, 0.38, 0.5, 14),
-      new THREE.MeshStandardMaterial({
-        color: 0x2a1a40,
-        emissive: 0xffaa22,
-        emissiveIntensity: 1.05,
-        metalness: 0.65,
-        roughness: 0.22,
-      }),
-    );
+    const bobBaseY = 1.02;
+    g.position.set(lane * LANE_WIDTH, bobBaseY, z);
+
+    const tankMat = new THREE.MeshPhysicalMaterial({
+      color: 0x2a2248,
+      emissive: 0xff8833,
+      emissiveIntensity: 0.42,
+      metalness: 0.8,
+      roughness: 0.2,
+      clearcoat: 0.95,
+      clearcoatRoughness: 0.1,
+      sheen: 0.45,
+      sheenRoughness: 0.5,
+      sheenColor: new THREE.Color(0xffccaa),
+    });
+    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.21, 0.4, 6, 12), tankMat);
     body.rotation.z = Math.PI / 2;
     body.castShadow = true;
     g.add(body);
-    const nozzle = new THREE.Mesh(
-      new THREE.ConeGeometry(0.14, 0.28, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0xff6622,
-        emissive: 0xff4400,
-        emissiveIntensity: 1.2,
-        metalness: 0.4,
-      }),
+
+    const strapMat = new THREE.MeshStandardMaterial({
+      color: 0x151028,
+      metalness: 0.75,
+      roughness: 0.35,
+    });
+    const strap = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.035, 8, 20), strapMat);
+    strap.rotation.x = Math.PI / 2;
+    strap.position.set(0, -0.14, 0.04);
+    g.add(strap);
+
+    const wingMat = new THREE.MeshStandardMaterial({
+      color: 0x121838,
+      emissive: 0x00e8ff,
+      emissiveIntensity: 0.5,
+      metalness: 0.65,
+      roughness: 0.28,
+    });
+    const wingGeo = new THREE.BoxGeometry(0.58, 0.035, 0.22);
+    const wingL = new THREE.Mesh(wingGeo, wingMat);
+    wingL.position.set(-0.36, 0.02, 0);
+    wingL.rotation.set(0.08, 0, 0.14);
+    const wingR = wingL.clone();
+    wingR.position.x = 0.36;
+    wingR.rotation.z = -0.14;
+    g.add(wingL, wingR);
+
+    const bellMat = new THREE.MeshPhysicalMaterial({
+      color: 0x2a1008,
+      emissive: 0xff5500,
+      emissiveIntensity: 0.95,
+      metalness: 0.55,
+      roughness: 0.32,
+      clearcoat: 0.55,
+      clearcoatRoughness: 0.25,
+    });
+    const bell = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.09, 0.16, 12), bellMat);
+    bell.rotation.x = Math.PI / 2;
+    bell.position.set(0, 0, -0.32);
+    bell.castShadow = true;
+    g.add(bell);
+
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(0.06, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffffcc, transparent: true, opacity: 0.95 }),
     );
-    nozzle.rotation.x = Math.PI / 2;
-    nozzle.position.set(0, -0.12, -0.32);
-    g.add(nozzle);
-    const glow = new THREE.Mesh(
-      new THREE.RingGeometry(0.55, 0.72, 24),
+    core.position.set(0, 0, -0.4);
+    g.add(core);
+
+    const plumeMat = new THREE.MeshBasicMaterial({
+      color: 0xff9944,
+      transparent: true,
+      opacity: 0.32,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const plume = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.32, 10, 1, true), plumeMat);
+    plume.rotation.x = -Math.PI / 2;
+    plume.position.set(0, 0, -0.5);
+    g.add(plume);
+
+    const haloOuter = new THREE.Mesh(
+      new THREE.TorusGeometry(0.52, 0.014, 8, 40),
       new THREE.MeshBasicMaterial({
-        color: 0xffdd66,
+        color: 0xffee99,
         transparent: true,
-        opacity: 0.35,
-        side: THREE.DoubleSide,
+        opacity: 0.2,
+        blending: THREE.AdditiveBlending,
         depthWrite: false,
       }),
     );
-    glow.rotation.x = -Math.PI / 2;
-    glow.position.y = -0.02;
-    g.add(glow);
+    haloOuter.rotation.x = Math.PI / 2;
+    haloOuter.position.y = -0.02;
+    g.add(haloOuter);
+
+    const haloInner = new THREE.Mesh(
+      new THREE.RingGeometry(0.34, 0.48, 36),
+      new THREE.MeshBasicMaterial({
+        color: 0x66ffff,
+        transparent: true,
+        opacity: 0.12,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    haloInner.rotation.x = -Math.PI / 2;
+    haloInner.position.y = -0.035;
+    g.add(haloInner);
+
     g.userData.jetpackPickup = true;
+    g.userData.bobBaseY = bobBaseY;
+    g.userData.plume = plume;
+    g.userData.plumeMat = plumeMat;
+    g.userData.haloOuter = haloOuter;
+    g.userData.haloInner = haloInner;
+    g.userData.haloInnerMat = haloInner.material as THREE.MeshBasicMaterial;
+    g.userData.phase = Math.random() * Math.PI * 2;
+
     this.worldGroup.add(g);
     this.jetpackPickup = { mesh: g, lane, z };
     this.announce("JETPACK READY — drive through it", 2400);
@@ -1412,28 +1616,212 @@ export class Game {
     }
   }
 
+  private spawnMysteryBoxPickup(): void {
+    const lane = LANES[Math.floor(Math.random() * 3)]!;
+    const z = -MYSTERY_BOX_PICKUP_Z_OFFSET - this.distance;
+    const g = new THREE.Group();
+    const bobY = 0.98;
+    g.position.set(lane * LANE_WIDTH, bobY, z);
+
+    const qTex = createMysteryQuestionTexture();
+    const sideMat = new THREE.MeshStandardMaterial({
+      color: 0x3d1a6e,
+      emissive: 0x220844,
+      emissiveIntensity: 0.35,
+      metalness: 0.55,
+      roughness: 0.38,
+    });
+    const faceMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: qTex,
+      metalness: 0.25,
+      roughness: 0.35,
+      emissive: 0xaa66ff,
+      emissiveIntensity: 0.12,
+      emissiveMap: qTex,
+    });
+    const mats: THREE.MeshStandardMaterial[] = [
+      sideMat,
+      sideMat,
+      sideMat,
+      sideMat,
+      faceMat,
+      sideMat,
+    ];
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.88, 0.88), mats);
+    box.castShadow = true;
+    g.add(box);
+
+    g.userData.mysteryBoxPickup = true;
+    g.userData.bobY = bobY;
+    g.userData.phase = Math.random() * Math.PI * 2;
+    g.userData.questionTex = qTex;
+
+    this.worldGroup.add(g);
+    this.mysteryBoxPickup = { mesh: g, lane, z };
+    this.announce("MYSTERY BOX — drive through it if you dare", 2600);
+  }
+
+  private checkMysteryBoxPickup(): void {
+    if (!this.mysteryBoxPickup) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.mysteryBoxPickup.mesh.getWorldPosition(this.owp);
+    const oz = this.owp.z;
+    const ox = this.owp.x;
+    if (Math.abs(oz - PLAYER_Z) > 1.45) return;
+    if (Math.abs(ox - this.player.position.x) > 1.28) return;
+    this.worldGroup.remove(this.mysteryBoxPickup.mesh);
+    this.mysteryBoxPickup = null;
+    const now = performance.now();
+    this.mysteryScreenFlipUntil = now + MYSTERY_FLIP_DURATION_MS;
+    this.mysteryBoxUsedThisRun = true;
+    this.announce("MYSTERY — UPSIDE DOWN 5s · controls unchanged · survive", 5200);
+  }
+
+  private updateMysteryBoxPickupDespawn(): void {
+    if (!this.mysteryBoxPickup) return;
+    this.mysteryBoxPickup.mesh.getWorldPosition(this.owp);
+    const wz = this.owp.z;
+    if (wz > DESPAWN_BEHIND + 12) {
+      this.worldGroup.remove(this.mysteryBoxPickup.mesh);
+      this.mysteryBoxPickup = null;
+      this.mysteryBoxUsedThisRun = true;
+    }
+  }
+
   private spawnFlightCoin(): void {
     const lane = LANES[Math.floor(Math.random() * 3)]!;
     const z = -SPAWN_AHEAD * 0.52 - this.distance;
     const g = new THREE.Group();
-    const y = JETPACK_FLY_HEIGHT - 0.55 + Math.random() * 0.35;
-    g.position.set(lane * LANE_WIDTH, y, z);
-    const coin = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.28, 0.28, 0.07, 20),
-      new THREE.MeshStandardMaterial({
-        color: 0xffe566,
-        emissive: 0xffcc00,
-        emissiveIntensity: 1.1,
-        metalness: 0.9,
-        roughness: 0.18,
-      }),
-    );
+    const floatBase = JETPACK_FLY_HEIGHT - 0.55 + Math.random() * 0.35;
+    g.position.set(lane * LANE_WIDTH, floatBase, z);
+
+    const floatPh = Math.random() * Math.PI * 2;
+    const spin = 2.1 + Math.random() * 1.8;
+    g.userData.flightCoin = true;
+    g.userData.floatBase = floatBase;
+    g.userData.floatPh = floatPh;
+    g.userData.spin = spin;
+
+    const ringMat = new THREE.MeshPhysicalMaterial({
+      color: 0xffe8b8,
+      emissive: 0xffcc44,
+      emissiveIntensity: 0.3,
+      metalness: 1,
+      roughness: 0.12,
+      clearcoat: 1,
+      clearcoatRoughness: 0.06,
+      iridescence: 0.28,
+      iridescenceIOR: 1.33,
+      iridescenceThicknessRange: [90, 280],
+    });
+    g.userData.ringMat = ringMat;
+
+    const coin = new THREE.Mesh(new THREE.TorusGeometry(0.185, 0.048, 12, 32), ringMat);
     coin.rotation.x = Math.PI / 2;
     coin.castShadow = true;
     g.add(coin);
-    g.userData.flightCoin = true;
+
+    const hub = new THREE.Mesh(
+      new THREE.CircleGeometry(0.095, 28),
+      new THREE.MeshStandardMaterial({
+        color: 0xffc94d,
+        emissive: 0xffaa22,
+        emissiveIntensity: 0.55,
+        metalness: 0.88,
+        roughness: 0.22,
+      }),
+    );
+    hub.rotation.x = -Math.PI / 2;
+    hub.position.y = 0.002;
+    g.add(hub);
+
+    const bevel = new THREE.Mesh(
+      new THREE.TorusGeometry(0.198, 0.018, 6, 32),
+      new THREE.MeshStandardMaterial({
+        color: 0xfff2cc,
+        emissive: 0xffee88,
+        emissiveIntensity: 0.35,
+        metalness: 0.95,
+        roughness: 0.15,
+      }),
+    );
+    bevel.rotation.x = Math.PI / 2;
+    bevel.position.y = -0.004;
+    g.add(bevel);
+
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0xffeeaa,
+      transparent: true,
+      opacity: 0.26,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const glowRing = new THREE.Mesh(new THREE.RingGeometry(0.26, 0.38, 36), glowMat);
+    glowRing.rotation.x = -Math.PI / 2;
+    glowRing.position.y = -0.018;
+    g.add(glowRing);
+    g.userData.glowRing = glowRing;
+    g.userData.glowMat = glowMat;
+
     this.worldGroup.add(g);
     this.flightCoins.push({ mesh: g, lane, z, collected: false });
+  }
+
+  /** Idle motion for jetpack pickup, flight coins, and mystery box pickup. */
+  private animatePickups(dt: number, aliveT: number): void {
+    if (this.jetpackPickup) {
+      const g = this.jetpackPickup.mesh;
+      const ph = (g.userData.phase as number) ?? 0;
+      const t = aliveT * 2.35 + ph;
+      g.rotation.y += dt * 1.25;
+      g.rotation.x = Math.sin(t * 0.65) * 0.065;
+      const bb = (g.userData.bobBaseY as number) ?? 1.02;
+      g.position.y = bb + Math.sin(t) * 0.1;
+
+      const plume = g.userData.plume as THREE.Mesh | undefined;
+      const plumeMat = g.userData.plumeMat as THREE.MeshBasicMaterial | undefined;
+      if (plume && plumeMat) {
+        const f = aliveT * 20;
+        const s = 0.82 + Math.sin(f) * 0.22;
+        plume.scale.set(s, 0.7 + Math.sin(f * 1.1) * 0.28, s);
+        plumeMat.opacity = 0.22 + Math.sin(f * 0.9) * 0.14;
+      }
+      const ho = g.userData.haloOuter as THREE.Mesh | undefined;
+      if (ho) ho.rotation.z += dt * 0.55;
+      const hiMat = g.userData.haloInnerMat as THREE.MeshBasicMaterial | undefined;
+      if (hiMat) hiMat.opacity = 0.08 + Math.sin(aliveT * 3.1 + ph) * 0.07;
+    }
+
+    if (this.mysteryBoxPickup) {
+      const mg = this.mysteryBoxPickup.mesh;
+      const ph = (mg.userData.phase as number) ?? 0;
+      const bobBase = (mg.userData.bobY as number) ?? 0.98;
+      mg.rotation.y += dt * 1.65;
+      mg.rotation.x = Math.sin(aliveT * 2.2 + ph) * 0.12;
+      mg.position.y = bobBase + Math.sin(aliveT * 3.4 + ph) * 0.09;
+    }
+
+    for (const fc of this.flightCoins) {
+      if (fc.collected) continue;
+      const cg = fc.mesh;
+      const floatPh = (cg.userData.floatPh as number) ?? 0;
+      const spin = (cg.userData.spin as number) ?? 2.5;
+      const floatBase = (cg.userData.floatBase as number) ?? cg.position.y;
+      cg.rotation.y += dt * spin;
+      cg.rotation.z = Math.sin(aliveT * 2.5 + floatPh) * 0.14;
+      cg.position.y = floatBase + Math.sin(aliveT * 3.05 + floatPh) * 0.075;
+
+      const ringMat = cg.userData.ringMat as THREE.MeshPhysicalMaterial | undefined;
+      if (ringMat) {
+        ringMat.emissiveIntensity = 0.22 + Math.sin(aliveT * 4.8 + floatPh) * 0.2;
+      }
+      const glowMat = cg.userData.glowMat as THREE.MeshBasicMaterial | undefined;
+      if (glowMat) {
+        glowMat.opacity = 0.16 + Math.sin(aliveT * 5.5 + floatPh) * 0.12;
+      }
+    }
   }
 
   private updateFlightCoinsCollect(): void {
@@ -1622,9 +2010,15 @@ export class Game {
    */
   private onGlobalKeyDown(e: KeyboardEvent): void {
     if (!this.running || this.gameOver) return;
-    if (this.isLifeLostFrozen()) return;
-
     const code = e.code;
+    if (code === "Escape") {
+      e.preventDefault();
+      if (this.userPaused) this.resume();
+      else if (!this.isLifeLostFrozen()) this.pause();
+      return;
+    }
+    if (this.isLifeLostFrozen() || this.userPaused) return;
+
     const key = e.key;
     const kc = (e as KeyboardEvent & { keyCode?: number }).keyCode ?? 0;
     const left = code === "ArrowLeft" || key === "ArrowLeft" || kc === 37;
@@ -1655,8 +2049,9 @@ export class Game {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const lifeFrozen =
       this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
+    const simFrozen = lifeFrozen || this.userPaused;
 
-    if (this.running && !this.gameOver && !lifeFrozen) {
+    if (this.running && !this.gameOver && !simFrozen) {
       const nowTick = performance.now();
       if (this.jetpackFlyingUntil !== 0 && nowTick >= this.jetpackFlyingUntil) {
         this.jetpackPostImmunityUntil = nowTick + JETPACK_LAND_IMMUNITY_MS;
@@ -1762,7 +2157,22 @@ export class Game {
       this.score += this.velocityZ * dt * 1.22 + dt * 26;
 
       if (!this.jetpackUsedThisRun && this.jetpackSpawnAtMs === 0 && Math.floor(this.score) >= JETPACK_SCORE_TRIGGER) {
-        this.jetpackSpawnAtMs = nowTick + JETPACK_SPAWN_DELAY_MS;
+        this.jetpackSpawnAtMs = nowTick + randRange(JETPACK_SPAWN_DELAY_MIN_MS, JETPACK_SPAWN_DELAY_MAX_MS);
+      }
+      if (
+        !this.mysteryBoxUsedThisRun &&
+        this.mysteryBoxSpawnAtMs === 0 &&
+        Math.floor(this.score) >= MYSTERY_BOX_SCORE_TRIGGER
+      ) {
+        this.mysteryBoxSpawnAtMs = nowTick + randRange(MYSTERY_BOX_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_SPAWN_DELAY_MAX_MS);
+      }
+      if (
+        !this.mysteryBoxUsedThisRun &&
+        this.mysteryBoxSpawnAtMs > 0 &&
+        nowTick >= this.mysteryBoxSpawnAtMs &&
+        !this.mysteryBoxPickup
+      ) {
+        this.spawnMysteryBoxPickup();
       }
       if (
         !this.jetpackUsedThisRun &&
@@ -1773,9 +2183,16 @@ export class Game {
       ) {
         this.spawnJetpackPickup();
       }
+      if (this.jetpackPickup || this.flightCoins.length > 0 || this.mysteryBoxPickup) {
+        this.animatePickups(dt, this.aliveTime);
+      }
       if (this.jetpackPickup) {
         this.checkJetpackPickup();
         this.updateJetpackPickupDespawn(nowTick);
+      }
+      if (this.mysteryBoxPickup) {
+        this.checkMysteryBoxPickup();
+        this.updateMysteryBoxPickupDespawn();
       }
       if (this.isJetpackFlying()) {
         if (nowTick >= this.jetpackNextCoinAtMs) {
@@ -1786,7 +2203,7 @@ export class Game {
       }
     }
 
-    const simDt = lifeFrozen ? 0 : dt;
+    const simDt = simFrozen ? 0 : dt;
     this.updateThiefAvatar(simDt);
 
     const warnP = this.getMirrorWarningProgress();
@@ -1812,6 +2229,8 @@ export class Game {
   private endGame(reason: string): void {
     this.gameOver = true;
     this.running = false;
+    this.userPaused = false;
+    this.pauseStartedAt = 0;
     this.gameOverReason = reason;
 
     this.jetpackFlyingUntil = 0;
@@ -1822,6 +2241,12 @@ export class Game {
       this.jetpackPickup = null;
     }
     this.clearFlightCoins();
+    this.mysteryBoxSpawnAtMs = 0;
+    if (this.mysteryBoxPickup) {
+      this.worldGroup.remove(this.mysteryBoxPickup.mesh);
+      this.mysteryBoxPickup = null;
+    }
+    this.mysteryScreenFlipUntil = 0;
 
     document.body.classList.remove("mirror-warning", "mirror-flash");
     this.mirrorAnnounceUntil = 0;
