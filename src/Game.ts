@@ -59,7 +59,7 @@ const MYSTERY_BOX_SCORE_TRIGGER = 7000;
 const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
 const MYSTERY_BOX_PICKUP_Z_OFFSET = 58;
 /** Collecting the box flips the entire view for this long (game keeps running). */
-const MYSTERY_FLIP_DURATION_MS = 5000;
+const MYSTERY_FLIP_DURATION_MS = 10000;
 /** Obstacle immunity: first window right as upside-down starts; second right after view resets. */
 const MYSTERY_FLIP_IMMUNITY_MS = 2000;
 const MYSTERY_POST_FLIP_IMMUNITY_MS = 2000;
@@ -1660,7 +1660,12 @@ export class Game {
   }
 
   private spawnMysteryBoxPickup(): void {
-    const lane = LANES[Math.floor(Math.random() * 3)]!;
+    /** After the first random spawn, place the box in the lane the player is steering toward so it stays in their path. */
+    const laneTowardPlayer = this.mysteryBoxPickupSpawnsThisRun >= 1;
+    const laneIdx = laneTowardPlayer
+      ? (THREE.MathUtils.clamp(this.targetLane, 0, 2) as 0 | 1 | 2)
+      : ((Math.floor(Math.random() * 3) as 0 | 1 | 2));
+    const lane = LANES[laneIdx]!;
     const z = -MYSTERY_BOX_PICKUP_Z_OFFSET - this.distance;
     const g = new THREE.Group();
     const bobY = 0.98;
@@ -1703,12 +1708,14 @@ export class Game {
     this.worldGroup.add(g);
     this.mysteryBoxPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
     this.mysteryBoxPickupSpawnsThisRun += 1;
-    this.announce(
-      this.mysteryBoxPickupSpawnsThisRun >= 2
-        ? "MYSTERY BOX — second chance · drive through if you dare"
-        : "MYSTERY BOX — drive through it if you dare",
-      2600,
-    );
+    const n = this.mysteryBoxPickupSpawnsThisRun;
+    const msg =
+      n >= 3
+        ? "MYSTERY BOX — in your lane · last chance"
+        : n >= 2
+          ? "MYSTERY BOX — second chance · in your lane"
+          : "MYSTERY BOX — drive through it if you dare";
+    this.announce(msg, n >= 2 ? 2800 : 2600);
   }
 
   private checkMysteryBoxPickup(): void {
@@ -1729,7 +1736,7 @@ export class Game {
     this.mysteryBoxCollectedThisRun = true;
     this.mysteryBoxUsedThisRun = true;
     this.announce(
-      "MYSTERY — UPSIDE DOWN 5s · 2s obstacle immunity now, 2s again when view resets · controls unchanged",
+      "MYSTERY — UPSIDE DOWN 10s · 2s obstacle immunity now, 2s again when view resets · controls unchanged",
       5400,
     );
   }
@@ -1743,7 +1750,7 @@ export class Game {
     if (wz > DESPAWN_BEHIND + 12) {
       this.worldGroup.remove(this.mysteryBoxPickup.mesh);
       this.mysteryBoxPickup = null;
-      if (this.mysteryBoxCollectedThisRun || this.mysteryBoxPickupSpawnsThisRun >= 2) {
+      if (this.mysteryBoxCollectedThisRun || this.mysteryBoxPickupSpawnsThisRun >= 3) {
         this.mysteryBoxUsedThisRun = true;
       }
     }
@@ -2237,6 +2244,12 @@ export class Game {
           this.mysteryBoxSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
         } else if (
           this.mysteryBoxPickupSpawnsThisRun === 1 &&
+          !this.mysteryBoxCollectedThisRun &&
+          this.score >= MYSTERY_BOX_RETRY_SCORE_TRIGGER
+        ) {
+          this.mysteryBoxSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
+        } else if (
+          this.mysteryBoxPickupSpawnsThisRun === 2 &&
           !this.mysteryBoxCollectedThisRun &&
           this.score >= MYSTERY_BOX_RETRY_SCORE_TRIGGER
         ) {
