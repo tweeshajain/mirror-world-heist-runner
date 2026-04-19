@@ -38,6 +38,15 @@ const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
 /** Non-fatal hit: freeze sim + input while the mirror-shatter beat plays (ms). */
 const LIFE_LOST_FREEZE_MS = 1000;
 
+const JETPACK_SCORE_TRIGGER = 4000;
+const JETPACK_SPAWN_DELAY_MS = 3000;
+const JETPACK_FLY_DURATION_MS = 5000;
+const JETPACK_LAND_IMMUNITY_MS = 2000;
+const JETPACK_FLY_HEIGHT = 3.35;
+const JETPACK_PICKUP_Z_OFFSET = 48;
+const COIN_SCORE_BONUS = 100;
+const COIN_SPAWN_INTERVAL_MS = 380;
+
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
 type ObstacleKind = "block" | "low" | "high";
@@ -55,6 +64,19 @@ interface Obstacle {
 interface RoadChunk {
   group: THREE.Group;
   zCenter: number;
+}
+
+interface JetpackPickup {
+  mesh: THREE.Group;
+  lane: (typeof LANES)[number];
+  z: number;
+}
+
+interface FlightCoin {
+  mesh: THREE.Group;
+  lane: (typeof LANES)[number];
+  z: number;
+  collected: boolean;
 }
 
 function randRange(a: number, b: number): number {
@@ -157,6 +179,17 @@ export class Game {
   private lifeLostFreezeUntil = 0;
   /** `performance.now()` until which obstacle hits do not cost lives (Mirror protocol grace). */
   private mirrorProtocolImmunityUntil = 0;
+  /** After jetpack flight ends, brief obstacle immunity (ms wall clock). */
+  private jetpackPostImmunityUntil = 0;
+  /** Once per run: wall-clock time when jetpack pickup should spawn (0 = not scheduled). */
+  private jetpackSpawnAtMs = 0;
+  /** True after jetpack sequence finished (pickup used or missed past despawn). */
+  private jetpackUsedThisRun = false;
+  private jetpackPickup: JetpackPickup | null = null;
+  /** While > 0 and `now <` this value, player is in jetpack flight. */
+  private jetpackFlyingUntil = 0;
+  private flightCoins: FlightCoin[] = [];
+  private jetpackNextCoinAtMs = 0;
 
   private running = false;
   private gameOver = false;
@@ -302,14 +335,32 @@ export class Game {
 
   getMirrorHint(): string {
     if (!this.isRunning()) return "";
+    const jet = this.getJetpackHudHint();
     const now = performance.now();
     const w = this.getMirrorWarningProgress();
     if (w > 0 && this.mirrorNextFireAt > 0) {
       const sec = Math.max(0, (this.mirrorNextFireAt - now) / 1000);
-      return `MIRROR REALITY — ${sec.toFixed(1)}s`;
+      const m = `MIRROR REALITY — ${sec.toFixed(1)}s`;
+      return jet ? `${jet} · ${m}` : m;
     }
-    if (now < this.mirrorAnnounceUntil) return this.lastMirrorMessage;
+    if (now < this.mirrorAnnounceUntil) return jet ? `${jet} · ${this.lastMirrorMessage}` : this.lastMirrorMessage;
+    if (jet) return jet;
     return "";
+  }
+
+  /** HUD line while jetpack is active or pickup is waiting ahead. */
+  private getJetpackHudHint(): string {
+    if (!this.isRunning()) return "";
+    if (this.isJetpackFlying()) {
+      const s = Math.max(0, (this.jetpackFlyingUntil - performance.now()) / 1000);
+      return `JETPACK ${s.toFixed(1)}s · coins +${COIN_SCORE_BONUS}`;
+    }
+    if (this.jetpackPickup) return "Grab the jetpack ahead";
+    return "";
+  }
+
+  private isJetpackFlying(): boolean {
+    return this.jetpackFlyingUntil > 0 && performance.now() < this.jetpackFlyingUntil;
   }
 
   getGameOver(): { over: boolean; reason: string } {
@@ -350,6 +401,16 @@ export class Game {
     this.lifeLostBannerUntil = 0;
     this.lifeLostFreezeUntil = 0;
     this.mirrorProtocolImmunityUntil = 0;
+    this.jetpackPostImmunityUntil = 0;
+    this.jetpackSpawnAtMs = 0;
+    this.jetpackUsedThisRun = false;
+    if (this.jetpackPickup) {
+      this.worldGroup.remove(this.jetpackPickup.mesh);
+      this.jetpackPickup = null;
+    }
+    this.jetpackFlyingUntil = 0;
+    this.clearFlightCoins();
+    this.jetpackNextCoinAtMs = 0;
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -438,7 +499,8 @@ export class Game {
     this.mirrorCamRoll = THREE.MathUtils.clamp(this.mirrorCamRoll, -0.18, 0.18);
   }
 
-  private applyFullMirrorShift(): void {
+  /** `controlHint` is prepended when full shift is bundled with a steer or jump/slide flip. */
+  private applyFullMirrorShift(controlHint = ""): void {
     this.worldFlipX = !this.worldFlipX;
     this.worldGroup.scale.x = this.worldFlipX ? -1 : 1;
 
@@ -455,12 +517,10 @@ export class Game {
     }
 
     this.bumpMirrorCamera(Math.random() < 0.5 ? 0.12 : -0.12);
-    this.announce(
-      this.mirrorLayer
-        ? "FULL SHIFT: Mirror plane — track and hazards slipped"
-        : "FULL SHIFT: Real plane stabilized",
-      2800,
-    );
+    const core = this.mirrorLayer
+      ? "FULL SHIFT: Mirror plane — track and hazards slipped"
+      : "FULL SHIFT: Real plane stabilized";
+    this.announce(controlHint ? `${controlHint} · ${core}` : core, 2800);
   }
 
   private executeMirrorReality(): void {
@@ -486,7 +546,18 @@ export class Game {
         2400,
       );
     } else {
-      this.applyFullMirrorShift();
+      let hint = "";
+      if (Math.random() < 0.5) {
+        this.invertLR = !this.invertLR;
+        this.vfxInvertWarpUntil = performance.now() + 920;
+        this.bumpMirrorCamera(this.invertLR ? 0.04 : -0.035);
+        hint = this.invertLR ? "Steer inverted" : "Steer restored";
+      } else {
+        this.swapJumpSlide = !this.swapJumpSlide;
+        this.bumpMirrorCamera(this.swapJumpSlide ? -0.045 : 0.04);
+        hint = this.swapJumpSlide ? "Jump / slide remapped" : "Jump / slide restored";
+      }
+      this.applyFullMirrorShift(hint);
     }
 
     this.mirrorProtocolImmunityUntil = performance.now() + MIRROR_PROTOCOL_IMMUNITY_MS;
@@ -850,6 +921,10 @@ export class Game {
     }
 
     const targetRz = THREE.MathUtils.clamp(-lateralVel * 0.0042, -0.085, 0.085);
+
+    if (this.isJetpackFlying()) {
+      targetRx += 0.38;
+    }
 
     this.thiefRig.rotation.x = THREE.MathUtils.lerp(this.thiefRig.rotation.x, targetRx, Math.min(1, dt * 11));
     this.thiefRig.rotation.z = THREE.MathUtils.lerp(this.thiefRig.rotation.z, targetRz, Math.min(1, dt * 9));
@@ -1261,6 +1336,140 @@ export class Game {
     this.obstacles.push({ mesh: group, lane: lanePick, z, kind, hit: false, nearEvaluated: false });
   }
 
+  private spawnJetpackPickup(): void {
+    const lane = LANES[Math.floor(Math.random() * 3)]!;
+    const z = -JETPACK_PICKUP_Z_OFFSET - this.distance;
+    const g = new THREE.Group();
+    g.position.set(lane * LANE_WIDTH, 1.05, z);
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.28, 0.38, 0.5, 14),
+      new THREE.MeshStandardMaterial({
+        color: 0x2a1a40,
+        emissive: 0xffaa22,
+        emissiveIntensity: 1.05,
+        metalness: 0.65,
+        roughness: 0.22,
+      }),
+    );
+    body.rotation.z = Math.PI / 2;
+    body.castShadow = true;
+    g.add(body);
+    const nozzle = new THREE.Mesh(
+      new THREE.ConeGeometry(0.14, 0.28, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xff6622,
+        emissive: 0xff4400,
+        emissiveIntensity: 1.2,
+        metalness: 0.4,
+      }),
+    );
+    nozzle.rotation.x = Math.PI / 2;
+    nozzle.position.set(0, -0.12, -0.32);
+    g.add(nozzle);
+    const glow = new THREE.Mesh(
+      new THREE.RingGeometry(0.55, 0.72, 24),
+      new THREE.MeshBasicMaterial({
+        color: 0xffdd66,
+        transparent: true,
+        opacity: 0.35,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.y = -0.02;
+    g.add(glow);
+    g.userData.jetpackPickup = true;
+    this.worldGroup.add(g);
+    this.jetpackPickup = { mesh: g, lane, z };
+    this.announce("JETPACK READY — drive through it", 2400);
+  }
+
+  private checkJetpackPickup(): void {
+    if (!this.jetpackPickup || this.isJetpackFlying()) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.jetpackPickup.mesh.getWorldPosition(this.owp);
+    const oz = this.owp.z;
+    const ox = this.owp.x;
+    if (Math.abs(oz - PLAYER_Z) > 1.45) return;
+    if (Math.abs(ox - this.player.position.x) > 1.25) return;
+    this.worldGroup.remove(this.jetpackPickup.mesh);
+    this.jetpackPickup = null;
+    const now = performance.now();
+    this.jetpackFlyingUntil = now + JETPACK_FLY_DURATION_MS;
+    this.jetpackNextCoinAtMs = now + 280;
+    this.announce("JETPACK LIVE — 5s · lane into coins", 2200);
+  }
+
+  private updateJetpackPickupDespawn(now: number): void {
+    if (!this.jetpackPickup || this.isJetpackFlying()) return;
+    this.jetpackPickup.mesh.getWorldPosition(this.owp);
+    const wz = this.owp.z;
+    if (wz > DESPAWN_BEHIND + 12) {
+      this.worldGroup.remove(this.jetpackPickup.mesh);
+      this.jetpackPickup = null;
+      this.jetpackUsedThisRun = true;
+    }
+  }
+
+  private spawnFlightCoin(): void {
+    const lane = LANES[Math.floor(Math.random() * 3)]!;
+    const z = -SPAWN_AHEAD * 0.52 - this.distance;
+    const g = new THREE.Group();
+    const y = JETPACK_FLY_HEIGHT - 0.55 + Math.random() * 0.35;
+    g.position.set(lane * LANE_WIDTH, y, z);
+    const coin = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.28, 0.28, 0.07, 20),
+      new THREE.MeshStandardMaterial({
+        color: 0xffe566,
+        emissive: 0xffcc00,
+        emissiveIntensity: 1.1,
+        metalness: 0.9,
+        roughness: 0.18,
+      }),
+    );
+    coin.rotation.x = Math.PI / 2;
+    coin.castShadow = true;
+    g.add(coin);
+    g.userData.flightCoin = true;
+    this.worldGroup.add(g);
+    this.flightCoins.push({ mesh: g, lane, z, collected: false });
+  }
+
+  private updateFlightCoinsCollect(): void {
+    if (!this.isJetpackFlying()) return;
+    const px = this.player.position.x;
+    const pz = PLAYER_Z;
+    this.worldGroup.updateMatrixWorld(true);
+    const keep: FlightCoin[] = [];
+    for (const c of this.flightCoins) {
+      if (c.collected) continue;
+      c.mesh.getWorldPosition(this.owp);
+      const oz = this.owp.z;
+      const ox = this.owp.x;
+      if (oz > DESPAWN_BEHIND + 6) {
+        this.worldGroup.remove(c.mesh);
+        continue;
+      }
+      if (Math.abs(oz - pz) < 1.15 && Math.abs(ox - px) < 0.95) {
+        c.collected = true;
+        this.worldGroup.remove(c.mesh);
+        this.score += COIN_SCORE_BONUS;
+        this.nearMissFlashUntil = performance.now() + 120;
+        continue;
+      }
+      keep.push(c);
+    }
+    this.flightCoins = keep;
+  }
+
+  private clearFlightCoins(): void {
+    for (const c of this.flightCoins) {
+      if (!c.collected) this.worldGroup.remove(c.mesh);
+    }
+    this.flightCoins.length = 0;
+  }
+
   private queueLane(dir: -1 | 1): void {
     let d = dir;
     if (this.invertLR) d = (-d) as -1 | 1;
@@ -1269,6 +1478,7 @@ export class Game {
   }
 
   private tryJump(): void {
+    if (this.isJetpackFlying()) return;
     if (this.sliding || this.jumping) return;
     const doJump = this.swapJumpSlide ? false : true;
     const doSlide = this.swapJumpSlide ? true : false;
@@ -1282,6 +1492,7 @@ export class Game {
   }
 
   private trySlide(): void {
+    if (this.isJetpackFlying()) return;
     if (this.jumping) return;
     const doSlide = this.swapJumpSlide ? false : true;
     const doJump = this.swapJumpSlide ? true : false;
@@ -1324,6 +1535,7 @@ export class Game {
 
   /** When obstacle passes behind player, reward razor-thin clears. */
   private scanNearMissPasses(): void {
+    if (this.isJetpackFlying()) return;
     const px = this.player.position.x;
     const pz = PLAYER_Z;
     const charY = this.playerY;
@@ -1357,6 +1569,7 @@ export class Game {
   }
 
   private checkCollisions(): void {
+    if (this.isJetpackFlying()) return;
     const px = this.player.position.x;
     const pz = PLAYER_Z;
     const charY = this.playerY;
@@ -1387,7 +1600,8 @@ export class Game {
   private collideFail(o: Obstacle): void {
     if (o.hit) return;
     o.hit = true;
-    if (performance.now() < this.mirrorProtocolImmunityUntil) {
+    const nowHit = performance.now();
+    if (nowHit < this.mirrorProtocolImmunityUntil || nowHit < this.jetpackPostImmunityUntil) {
       return;
     }
     this.lives -= 1;
@@ -1443,7 +1657,16 @@ export class Game {
       this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
 
     if (this.running && !this.gameOver && !lifeFrozen) {
-      this.tickMirrorRealitySystem(performance.now());
+      const nowTick = performance.now();
+      if (this.jetpackFlyingUntil !== 0 && nowTick >= this.jetpackFlyingUntil) {
+        this.jetpackPostImmunityUntil = nowTick + JETPACK_LAND_IMMUNITY_MS;
+        this.jetpackFlyingUntil = 0;
+        this.clearFlightCoins();
+        this.jetpackUsedThisRun = true;
+        this.announce("JETPACK OFF · 2s immunity", 2000);
+      }
+
+      this.tickMirrorRealitySystem(nowTick);
 
       const diffRamp = 1 + this.aliveTime * 0.02;
       const scoreMilestones = Math.min(
@@ -1482,7 +1705,14 @@ export class Game {
       const t = this.playerLane === this.targetLane ? 0 : this.laneBlend;
       this.player.position.x = THREE.MathUtils.lerp(fromX, toX, t);
 
-      if (this.jumping) {
+      if (this.isJetpackFlying()) {
+        const tgt = JETPACK_FLY_HEIGHT + Math.sin(this.aliveTime * 11) * 0.12;
+        this.playerY = THREE.MathUtils.lerp(this.playerY, tgt, Math.min(1, dt * 2.6));
+        this.jumping = false;
+        this.sliding = false;
+        this.slideTimer = 0;
+        this.jumpVel = 0;
+      } else if (this.jumping) {
         this.jumpVel += -28 * dt;
         this.playerY += this.jumpVel * dt;
         if (this.playerY <= 0) {
@@ -1530,6 +1760,30 @@ export class Game {
       this.scanNearMissPasses();
 
       this.score += this.velocityZ * dt * 1.22 + dt * 26;
+
+      if (!this.jetpackUsedThisRun && this.jetpackSpawnAtMs === 0 && Math.floor(this.score) >= JETPACK_SCORE_TRIGGER) {
+        this.jetpackSpawnAtMs = nowTick + JETPACK_SPAWN_DELAY_MS;
+      }
+      if (
+        !this.jetpackUsedThisRun &&
+        this.jetpackSpawnAtMs > 0 &&
+        nowTick >= this.jetpackSpawnAtMs &&
+        !this.jetpackPickup &&
+        this.jetpackFlyingUntil === 0
+      ) {
+        this.spawnJetpackPickup();
+      }
+      if (this.jetpackPickup) {
+        this.checkJetpackPickup();
+        this.updateJetpackPickupDespawn(nowTick);
+      }
+      if (this.isJetpackFlying()) {
+        if (nowTick >= this.jetpackNextCoinAtMs) {
+          this.jetpackNextCoinAtMs = nowTick + COIN_SPAWN_INTERVAL_MS + Math.random() * 200;
+          this.spawnFlightCoin();
+        }
+        this.updateFlightCoinsCollect();
+      }
     }
 
     const simDt = lifeFrozen ? 0 : dt;
@@ -1546,7 +1800,7 @@ export class Game {
       this.player.position.x * 0.28,
       simDt * 3,
     );
-    this.camera.position.y = 3.2 + bob;
+    this.camera.position.y = 3.2 + bob + (this.isJetpackFlying() ? 0.5 : 0);
     this.camera.lookAt(
       this.player.position.x * 0.15,
       1.1 + this.playerY * 0.08,
@@ -1559,6 +1813,15 @@ export class Game {
     this.gameOver = true;
     this.running = false;
     this.gameOverReason = reason;
+
+    this.jetpackFlyingUntil = 0;
+    this.jetpackPostImmunityUntil = 0;
+    this.jetpackSpawnAtMs = 0;
+    if (this.jetpackPickup) {
+      this.worldGroup.remove(this.jetpackPickup.mesh);
+      this.jetpackPickup = null;
+    }
+    this.clearFlightCoins();
 
     document.body.classList.remove("mirror-warning", "mirror-flash");
     this.mirrorAnnounceUntil = 0;
