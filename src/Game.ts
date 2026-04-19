@@ -99,7 +99,7 @@ export class Game {
   private targetLane = 1;
   private laneBlend = 0;
 
-  private velocityZ = 15.5;
+  private velocityZ = 18.5;
   private distance = 0;
   private aliveTime = 0;
   private score = 0;
@@ -312,7 +312,7 @@ export class Game {
   }
 
   private resetSession(): void {
-    this.velocityZ = 15.5;
+    this.velocityZ = 18.5;
     this.distance = 0;
     this.aliveTime = 0;
     this.score = 0;
@@ -1214,6 +1214,12 @@ export class Game {
     return this.laneFairnessBag.pop()!;
   }
 
+  /** When a spawn is forced onto `lane`, drop one matching entry so totals stay balanced. */
+  private consumeLaneFromFairnessBag(lane: (typeof LANES)[number]): void {
+    const idx = this.laneFairnessBag.indexOf(lane);
+    if (idx !== -1) this.laneFairnessBag.splice(idx, 1);
+  }
+
   private spawnObstacle(): void {
     const z = -SPAWN_AHEAD - this.distance;
     const dNew = this.distance;
@@ -1239,6 +1245,7 @@ export class Game {
         const ins = Math.floor(Math.random() * (this.laneFairnessBag.length + 1));
         this.laneFairnessBag.splice(ins, 0, lanePick);
         lanePick = must;
+        this.consumeLaneFromFairnessBag(must);
       }
     }
 
@@ -1474,10 +1481,10 @@ export class Game {
         Math.floor(this.score / SCORE_SPEED_MILESTONE),
       );
       const scoreSpeedBoost = scoreMilestones * SPEED_BONUS_PER_MILESTONE;
-      const vmax = 46 + scoreMilestones * VMAX_BONUS_PER_MILESTONE;
-      const targetV = 16.4 + this.aliveTime * 0.84 * diffRamp + scoreSpeedBoost;
-      this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * 1.72);
-      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, 11, vmax);
+      const vmax = 50 + scoreMilestones * VMAX_BONUS_PER_MILESTONE;
+      const targetV = 19.5 + this.aliveTime * 0.95 * diffRamp + scoreSpeedBoost;
+      this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * 1.85);
+      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, 14, vmax);
 
       this.distance += this.velocityZ * dt;
       this.aliveTime += dt;
