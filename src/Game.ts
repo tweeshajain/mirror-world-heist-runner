@@ -48,11 +48,15 @@ const JETPACK_FLY_DURATION_MS = 5000;
 const JETPACK_LAND_IMMUNITY_MS = 2000;
 const JETPACK_FLY_HEIGHT = 3.35;
 const JETPACK_PICKUP_Z_OFFSET = 48;
+/** Spawn this many seconds of travel farther ahead so the pickup is visible earlier for lane changes. */
+const JETPACK_PICKUP_LEAD_TIME_S = 1;
 const COIN_SCORE_BONUS = 100;
 const COIN_SPAWN_INTERVAL_MS = 380;
 
 /** After this score, a mystery box spawns once per run (wall-clock delay below). */
 const MYSTERY_BOX_SCORE_TRIGGER = 7000;
+/** If the first mystery box is missed, a second pickup can be scheduled after this score. */
+const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
 /** Independent of jetpack timing: random delay in this range after score crosses the trigger. */
 const MYSTERY_BOX_SPAWN_DELAY_MIN_MS = 2600;
 const MYSTERY_BOX_SPAWN_DELAY_MAX_MS = 6400;
@@ -244,7 +248,12 @@ export class Game {
   private jetpackNextCoinAtMs = 0;
 
   private mysteryBoxSpawnAtMs = 0;
+  /** True when no more mystery pickups this run (collected flip, or both pickups missed). */
   private mysteryBoxUsedThisRun = false;
+  /** Mystery pickups placed this run (0–2). */
+  private mysteryBoxPickupSpawnsThisRun = 0;
+  /** True once the player collects a box and the upside-down effect starts. */
+  private mysteryBoxCollectedThisRun = false;
   private mysteryBoxPickup: MysteryBoxPickup | null = null;
   /** Until this time (exclusive), full-screen CSS flip is active. */
   private mysteryScreenFlipUntil = 0;
@@ -541,6 +550,8 @@ export class Game {
     this.jetpackNextCoinAtMs = 0;
     this.mysteryBoxSpawnAtMs = 0;
     this.mysteryBoxUsedThisRun = false;
+    this.mysteryBoxPickupSpawnsThisRun = 0;
+    this.mysteryBoxCollectedThisRun = false;
     if (this.mysteryBoxPickup) {
       this.worldGroup.remove(this.mysteryBoxPickup.mesh);
       this.mysteryBoxPickup = null;
@@ -1473,7 +1484,9 @@ export class Game {
 
   private spawnJetpackPickup(): void {
     const lane = LANES[Math.floor(Math.random() * 3)]!;
-    const z = -JETPACK_PICKUP_Z_OFFSET - this.distance;
+    const v = THREE.MathUtils.clamp(this.velocityZ, 16, 52);
+    const leadZ = JETPACK_PICKUP_Z_OFFSET + v * JETPACK_PICKUP_LEAD_TIME_S;
+    const z = -leadZ - this.distance;
     const g = new THREE.Group();
     const bobBaseY = 1.02;
     g.position.set(lane * LANE_WIDTH, bobBaseY, z);
@@ -1678,7 +1691,13 @@ export class Game {
 
     this.worldGroup.add(g);
     this.mysteryBoxPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
-    this.announce("MYSTERY BOX — drive through it if you dare", 2600);
+    this.mysteryBoxPickupSpawnsThisRun += 1;
+    this.announce(
+      this.mysteryBoxPickupSpawnsThisRun >= 2
+        ? "MYSTERY BOX — second chance · drive through if you dare"
+        : "MYSTERY BOX — drive through it if you dare",
+      2600,
+    );
   }
 
   private checkMysteryBoxPickup(): void {
@@ -1695,6 +1714,7 @@ export class Game {
     this.mysteryBoxPickup = null;
     const now = performance.now();
     this.mysteryScreenFlipUntil = now + MYSTERY_FLIP_DURATION_MS;
+    this.mysteryBoxCollectedThisRun = true;
     this.mysteryBoxUsedThisRun = true;
     this.announce("MYSTERY — UPSIDE DOWN 5s · controls unchanged · survive", 5200);
   }
@@ -1708,7 +1728,9 @@ export class Game {
     if (wz > DESPAWN_BEHIND + 12) {
       this.worldGroup.remove(this.mysteryBoxPickup.mesh);
       this.mysteryBoxPickup = null;
-      this.mysteryBoxUsedThisRun = true;
+      if (this.mysteryBoxCollectedThisRun || this.mysteryBoxPickupSpawnsThisRun >= 2) {
+        this.mysteryBoxUsedThisRun = true;
+      }
     }
   }
 
@@ -2190,12 +2212,16 @@ export class Game {
           this.jetpackSpawnAtMs = nowTick + randRange(JETPACK_SPAWN_DELAY_MIN_MS, JETPACK_SPAWN_DELAY_MAX_MS);
         }
       }
-      if (
-        !this.mysteryBoxUsedThisRun &&
-        this.mysteryBoxSpawnAtMs === 0 &&
-        this.score >= MYSTERY_BOX_SCORE_TRIGGER
-      ) {
-        this.mysteryBoxSpawnAtMs = nowTick + randRange(MYSTERY_BOX_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_SPAWN_DELAY_MAX_MS);
+      if (!this.mysteryBoxUsedThisRun && this.mysteryBoxSpawnAtMs === 0 && !this.mysteryBoxPickup && !this.isJetpackFlying()) {
+        if (this.mysteryBoxPickupSpawnsThisRun === 0 && this.score >= MYSTERY_BOX_SCORE_TRIGGER) {
+          this.mysteryBoxSpawnAtMs = nowTick + randRange(MYSTERY_BOX_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_SPAWN_DELAY_MAX_MS);
+        } else if (
+          this.mysteryBoxPickupSpawnsThisRun === 1 &&
+          !this.mysteryBoxCollectedThisRun &&
+          this.score >= MYSTERY_BOX_RETRY_SCORE_TRIGGER
+        ) {
+          this.mysteryBoxSpawnAtMs = nowTick + randRange(MYSTERY_BOX_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_SPAWN_DELAY_MAX_MS);
+        }
       }
       if (
         !this.mysteryBoxUsedThisRun &&
