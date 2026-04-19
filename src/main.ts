@@ -5,7 +5,6 @@ const canvas = document.getElementById("c") as HTMLCanvasElement;
 const cWrap = document.getElementById("c-wrap") as HTMLDivElement;
 const scoreEl = document.getElementById("score")!;
 const livesEl = document.getElementById("lives")!;
-const chaseBar = document.getElementById("chase-bar")!;
 const layerBadge = document.getElementById("layer-badge")!;
 const mirrorHint = document.getElementById("mirror-hint")!;
 const mirrorWarnBar = document.getElementById("mirror-warn-bar")!;
@@ -138,7 +137,6 @@ function setHud(): void {
     lifeLostBanner.textContent = "";
     livesEl.classList.remove("life-lost-pulse");
   }
-  chaseBar.style.width = `${Math.round(game.getChase() * 100)}%`;
   const mirror = game.getMirrorLayer();
   layerBadge.textContent = mirror ? "MIRROR" : "REAL";
   layerBadge.className = mirror ? "layer-mirror" : "layer-real";

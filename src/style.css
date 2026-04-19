@@ -110,7 +110,6 @@ body {
   align-items: flex-start;
 }
 
-body.game-running #chase-bar-wrap,
 body.game-running #layer-badge,
 body.game-running #mirror-hint,
 body.game-running #quick-tip {
@@ -210,35 +209,6 @@ body.game-running #quick-tip {
   color: var(--neon-b);
   border-color: rgba(255, 42, 161, 0.55) !important;
   text-shadow: 0 0 12px rgba(255, 42, 161, 0.55);
-}
-
-#chase-bar-wrap {
-  width: min(320px, 88vw);
-}
-
-#chase-label {
-  font-size: 0.65rem;
-  opacity: 0.85;
-  margin-bottom: 4px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-#chase-bar-bg {
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-
-#chase-bar {
-  height: 100%;
-  width: 0%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--neon-a), var(--neon-b));
-  box-shadow: 0 0 14px rgba(0, 245, 255, 0.45);
-  transition: width 0.08s linear;
 }
 
 #mirror-warn-bar {
@@ -657,7 +627,7 @@ body.life-lost-frozen #c-wrap {
 }
 
 .shatter-overlay.shatter-active .shatter-shard {
-  animation: shatterShardFly 2s cubic-bezier(0.2, 0.75, 0.25, 1) forwards;
+  animation: shatterShardFly 1s cubic-bezier(0.2, 0.75, 0.25, 1) forwards;
   animation-delay: var(--sj-delay, 0s);
 }
 

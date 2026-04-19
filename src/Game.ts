@@ -36,7 +36,7 @@ const STARTING_LIVES = 3;
 /** After Mirror Reality fires, obstacle hits do not cost lives (ms). */
 const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
 /** Non-fatal hit: freeze sim + input while the mirror-shatter beat plays (ms). */
-const LIFE_LOST_FREEZE_MS = 2000;
+const LIFE_LOST_FREEZE_MS = 1000;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -148,7 +148,6 @@ export class Game {
   private lastMirrorProtocolAt = 0;
   private lastStumbleUnderMirror = false;
 
-  private chase = 0;
   private stumbleCooldown = 0;
   private lives = STARTING_LIVES;
 
@@ -162,8 +161,6 @@ export class Game {
   private running = false;
   private gameOver = false;
   private gameOverReason = "";
-  /** True after an obstacle cost a life this tick (avoids also losing one to enforcement same frame). */
-  private obstacleLifeLossThisUpdate = false;
 
   private clock = new THREE.Clock();
   private resizeBound = () => this.onResize();
@@ -299,10 +296,6 @@ export class Game {
     return this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
   }
 
-  getChase(): number {
-    return this.chase;
-  }
-
   getMirrorLayer(): boolean {
     return this.mirrorLayer;
   }
@@ -334,7 +327,6 @@ export class Game {
     this.distance = 0;
     this.aliveTime = 0;
     this.score = 0;
-    this.chase = 0;
     this.playerLane = 1;
     this.targetLane = 1;
     this.laneBlend = 0;
@@ -412,18 +404,17 @@ export class Game {
     return THREE.MathUtils.clamp((this.vfxMirrorGlitchUntil - now) / 720, 0, 1);
   }
 
-  /** 0–1: chromatic / danger pulse (chase, telegraph, stumble). */
+  /** 0–1: chromatic / danger pulse (mirror telegraph, stumble). */
   getVfxDangerChroma(): number {
     if (!this.isRunning()) return 0;
     const now = performance.now();
-    const chaseN = Math.pow(Math.max(0, (this.chase - 0.4) / 0.6), 1.25);
     const warn = this.getMirrorWarningProgress();
     const stumble =
       now < this.vfxStumblePulseUntil
         ? THREE.MathUtils.clamp((this.vfxStumblePulseUntil - now) / 400, 0, 1)
         : 0;
     const g = this.getVfxMirrorGlitch();
-    return THREE.MathUtils.clamp(chaseN * 0.82 + warn * 0.58 + stumble * 0.95 + g * 0.22, 0, 1);
+    return THREE.MathUtils.clamp(warn * 0.72 + stumble * 0.95 + g * 0.28, 0, 1);
   }
 
   /** 0–1: screen warp while horizontal invert “beds in”. */
@@ -1307,18 +1298,17 @@ export class Game {
   private stumble(): void {
     if (this.stumbleCooldown > 0) return;
     this.stumbleCooldown = 0.32;
-    this.chase = Math.min(1, this.chase + 0.14);
     this.velocityZ *= 0.82;
     this.vfxStumblePulseUntil = performance.now() + 420;
     this.lastStumbleUnderMirror = this.invertLR || this.swapJumpSlide || this.mirrorLayer;
   }
 
-  /** Mirror / HUD beat after losing a life but staying in the run (obstacle or enforcement). */
+  /** Mirror / HUD beat after losing a life but staying in the run (obstacle hit). */
   private scheduleLifeLostRecoverBeat(): void {
     const now = performance.now();
     const pad = LIFE_LOST_FREEZE_MS;
     this.lifeLostFreezeUntil = now + pad;
-    this.lifeLostBannerUntil = now + Math.max(3200, pad + 800);
+    this.lifeLostBannerUntil = now + Math.max(2200, pad + 700);
     this.mirrorNextFireAt += pad;
     this.mirrorWarningStartAt += pad;
     if (this.mirrorAnnounceUntil > now) {
@@ -1326,23 +1316,9 @@ export class Game {
     }
   }
 
-  /** Enforcement meter filled: costs a life like a hit; run ends only on last life. */
-  private resolveEnforcementCatch(): void {
-    if (!this.running || this.gameOver || this.chase < 1) return;
-    this.lives -= 1;
-    this.stumble();
-    if (this.lives <= 0) {
-      this.endGame("CHASE");
-      return;
-    }
-    this.chase = 0.38;
-    this.scheduleLifeLostRecoverBeat();
-  }
-
   private triggerNearMiss(): void {
     this.score += 38;
     this.nearMissFlashUntil = performance.now() + 260;
-    this.chase = Math.max(0, this.chase - 0.042);
     this.bumpMirrorCamera(0.028);
   }
 
@@ -1415,7 +1391,6 @@ export class Game {
       return;
     }
     this.lives -= 1;
-    this.obstacleLifeLossThisUpdate = true;
     this.stumble();
     if (this.lives > 0) {
       this.scheduleLifeLostRecoverBeat();
@@ -1468,7 +1443,6 @@ export class Game {
       this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
 
     if (this.running && !this.gameOver && !lifeFrozen) {
-      this.obstacleLifeLossThisUpdate = false;
       this.tickMirrorRealitySystem(performance.now());
 
       const diffRamp = 1 + this.aliveTime * 0.02;
@@ -1490,10 +1464,6 @@ export class Game {
       } else {
         this.worldGroup.position.x = THREE.MathUtils.lerp(this.worldGroup.position.x, 0, Math.min(1, dt * 6));
       }
-
-      this.chase += dt * (0.045 + this.aliveTime * 0.0009);
-      this.chase -= dt * 0.028;
-      this.chase = THREE.MathUtils.clamp(this.chase, 0, 1);
 
       if (this.stumbleCooldown > 0) this.stumbleCooldown -= dt;
 
@@ -1560,14 +1530,6 @@ export class Game {
       this.scanNearMissPasses();
 
       this.score += this.velocityZ * dt * 1.22 + dt * 26;
-
-      if (this.chase >= 1) {
-        if (this.obstacleLifeLossThisUpdate) {
-          this.chase = 0.42;
-        } else {
-          this.resolveEnforcementCatch();
-        }
-      }
     }
 
     const simDt = lifeFrozen ? 0 : dt;
@@ -1584,7 +1546,7 @@ export class Game {
       this.player.position.x * 0.28,
       simDt * 3,
     );
-    this.camera.position.y = 3.2 + bob + (this.chase > 0.65 ? this.chase * 0.35 : 0);
+    this.camera.position.y = 3.2 + bob;
     this.camera.lookAt(
       this.player.position.x * 0.15,
       1.1 + this.playerY * 0.08,
@@ -1596,30 +1558,7 @@ export class Game {
   private endGame(reason: string): void {
     this.gameOver = true;
     this.running = false;
-    if (reason === "CHASE") {
-      const mirrorChaos = this.invertLR || this.swapJumpSlide || this.mirrorLayer;
-      const protocolFresh = performance.now() - this.lastMirrorProtocolAt < 6500;
-      const parts: string[] = [];
-      if (this.invertLR) parts.push("strafe was inverted");
-      if (this.swapJumpSlide) parts.push("jump and slide were swapped");
-      if (this.mirrorLayer) parts.push("mirror layer was live");
-      if (mirrorChaos || protocolFresh || this.lastStumbleUnderMirror) {
-        const explain =
-          parts.length > 0
-            ? `${parts.join(" · ")} — `
-            : protocolFresh
-              ? "a Mirror protocol had just fired — "
-              : this.lastStumbleUnderMirror
-                ? "you were still paying off a hit under mirror rules — "
-                : "";
-        this.gameOverReason = `Mirror Enforcement caught you. ${explain}You read the old control map — the mirror read you first.`;
-      } else {
-        this.gameOverReason =
-          "Mirror Enforcement caught you — the gap closed clean; next run, steal more distance early.";
-      }
-    } else {
-      this.gameOverReason = reason;
-    }
+    this.gameOverReason = reason;
 
     document.body.classList.remove("mirror-warning", "mirror-flash");
     this.mirrorAnnounceUntil = 0;
