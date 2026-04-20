@@ -1,7 +1,7 @@
 import "./style.css";
 import { Game } from "./Game";
 import { saveRunAndGetLeaderboardSummary } from "./leaderboard";
-import { isLeaderboardConfigured } from "./supabase";
+import { resolveSupabaseClient } from "./supabase";
 
 const PLAYER_NAME_STORAGE = "mirror-heist-display-name";
 
@@ -85,14 +85,17 @@ async function populateGameOverLeaderboard(score: number, session: number): Prom
   leaderboardSetupHint.hidden = true;
   leaderboardSetupHint.textContent = "";
 
-  if (!isLeaderboardConfigured()) {
+  const client = await resolveSupabaseClient();
+  if (session !== leaderboardSession) return;
+
+  if (!client) {
     leaderboardStatus.hidden = false;
     leaderboardStatus.textContent =
-      "Online leaderboard is not connected, so your rank and the top 5 list cannot load.";
+      "We could not load the online leaderboard, so your rank and top scores are unavailable.";
     leaderboardSetupHint.hidden = false;
     leaderboardSetupHint.textContent = import.meta.env.DEV
-      ? "For local dev: add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (or VITE_SUPABASE_PUBLISHABLE_KEY) to a file named .env.local in the project root, restart the dev server, and run supabase/game_scores.sql once in the Supabase SQL Editor."
-      : "This build was created without Supabase environment variables. Rebuild with VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY set, or play using npm run dev and a .env.local file.";
+      ? "Fix: put URL + key in .env.local and restart npm run dev, OR copy public/supabase-config.example.json to public/supabase-config.json with your real values. Open the browser devtools console for details."
+      : "If you are playing a downloaded or hosted build, the game needs Supabase settings at build time, or a supabase-config.json file next to the site.";
     return;
   }
 

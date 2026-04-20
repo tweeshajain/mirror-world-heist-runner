@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import { resolveSupabaseClient } from "./supabase";
 
 export type TopScoreRow = { player_name: string; score: number };
 
@@ -13,8 +13,9 @@ export async function saveRunAndGetLeaderboardSummary(
   | { ok: true; rank: number; top5: TopScoreRow[] }
   | { ok: false; message: string; top5?: TopScoreRow[] }
 > {
+  const supabase = await resolveSupabaseClient();
   if (!supabase) {
-    return { ok: false, message: "Leaderboard not configured (add Supabase env vars)." };
+    return { ok: false, message: "Leaderboard is not connected." };
   }
 
   const name = playerName.trim().slice(0, 24) || "Runner";
