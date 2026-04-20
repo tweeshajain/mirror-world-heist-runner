@@ -1526,129 +1526,122 @@ export class Game {
     this.obstacles.push({ mesh: group, lane: lanePick, z, kind, hit: false, nearEvaluated: false });
   }
 
+  /** Twin vertical tanks, cyan tips, stepped nozzles, red flames — cartoon icon style. */
+  private buildCartoonJetpackPickupMesh(): THREE.Group {
+    const root = new THREE.Group();
+
+    const grey = new THREE.MeshStandardMaterial({
+      color: 0xc8ced8,
+      metalness: 0.08,
+      roughness: 0.82,
+    });
+    const nozzleGrey = new THREE.MeshStandardMaterial({
+      color: 0x9aa0aa,
+      metalness: 0.15,
+      roughness: 0.72,
+    });
+    const cyan = new THREE.MeshStandardMaterial({
+      color: 0x1ee8f5,
+      emissive: 0x0a8090,
+      emissiveIntensity: 0.5,
+      metalness: 0.2,
+      roughness: 0.42,
+    });
+    const bracketMat = new THREE.MeshStandardMaterial({
+      color: 0x3a404a,
+      metalness: 0.35,
+      roughness: 0.58,
+    });
+    const flameMat = new THREE.MeshBasicMaterial({
+      color: 0xff3344,
+      transparent: true,
+      opacity: 0.94,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const flameCoreMat = new THREE.MeshBasicMaterial({
+      color: 0xffcc66,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+
+    const capR = 0.086;
+    const capLen = 0.32;
+    const cy = 0.26;
+    const totalH = capLen + 2 * capR;
+
+    const addTank = (side: -1 | 1) => {
+      const x0 = side * 0.148;
+
+      const tank = new THREE.Mesh(new THREE.CapsuleGeometry(capR, capLen, 4, 12), grey);
+      tank.position.set(x0, cy, 0);
+      tank.castShadow = true;
+      root.add(tank);
+
+      const topY = cy + totalH * 0.5;
+      const tipH = 0.078;
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(capR * 1.02, tipH, 10), cyan);
+      tip.position.set(x0, topY + tipH * 0.5 - 0.008, 0);
+      root.add(tip);
+
+      const bottomY = cy - totalH * 0.5;
+      const steps: [number, number][] = [
+        [0.082, 0.038],
+        [0.064, 0.034],
+        [0.048, 0.03],
+      ];
+      let y = bottomY - steps[0]![1] * 0.5;
+      for (const [rad, h] of steps) {
+        const ring = new THREE.Mesh(new THREE.CylinderGeometry(rad, rad, h, 12), nozzleGrey);
+        ring.position.set(x0, y - h * 0.5, 0);
+        ring.castShadow = true;
+        root.add(ring);
+        y -= h;
+      }
+
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.14, 8, 1, true), flameMat);
+      flame.rotation.x = Math.PI;
+      flame.position.set(x0, y - 0.09, 0);
+      root.add(flame);
+
+      const flameCore = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.09, 6, 1, true), flameCoreMat);
+      flameCore.rotation.x = Math.PI;
+      flameCore.position.set(x0, y - 0.085, 0.01);
+      root.add(flameCore);
+
+      const semi = new THREE.Mesh(new THREE.TorusGeometry(0.092, 0.026, 8, 16, Math.PI), bracketMat);
+      semi.position.set(x0 + side * 0.108, cy, 0);
+      semi.rotation.set(0, Math.PI / 2, side * 0.15);
+      root.add(semi);
+    };
+
+    addTank(-1);
+    addTank(1);
+
+    root.userData.flameMeshes = root.children.filter((c: THREE.Object3D) => {
+      const m = c as THREE.Mesh;
+      return m.material === flameMat || m.material === flameCoreMat;
+    }) as THREE.Mesh[];
+    root.userData.flameMat = flameMat;
+    root.userData.flameCoreMat = flameCoreMat;
+
+    return root;
+  }
+
   private spawnJetpackPickup(): void {
     const lane = LANES[Math.floor(Math.random() * 3)]!;
     const v = THREE.MathUtils.clamp(this.velocityZ, 16, 52);
     const leadZ = JETPACK_PICKUP_Z_OFFSET + v * JETPACK_PICKUP_LEAD_TIME_S;
     const z = -leadZ - this.distance;
-    const g = new THREE.Group();
+    const g = this.buildCartoonJetpackPickupMesh();
     const bobBaseY = 1.02;
     g.position.set(lane * LANE_WIDTH, bobBaseY, z);
 
-    const tankMat = new THREE.MeshPhysicalMaterial({
-      color: 0x2a2248,
-      emissive: 0xff8833,
-      emissiveIntensity: 0.42,
-      metalness: 0.8,
-      roughness: 0.2,
-      clearcoat: 0.95,
-      clearcoatRoughness: 0.1,
-      sheen: 0.45,
-      sheenRoughness: 0.5,
-      sheenColor: new THREE.Color(0xffccaa),
-    });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.21, 0.4, 6, 12), tankMat);
-    body.rotation.z = Math.PI / 2;
-    body.castShadow = true;
-    g.add(body);
-
-    const strapMat = new THREE.MeshStandardMaterial({
-      color: 0x151028,
-      metalness: 0.75,
-      roughness: 0.35,
-    });
-    const strap = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.035, 8, 20), strapMat);
-    strap.rotation.x = Math.PI / 2;
-    strap.position.set(0, -0.14, 0.04);
-    g.add(strap);
-
-    const wingMat = new THREE.MeshStandardMaterial({
-      color: 0x121838,
-      emissive: 0x00e8ff,
-      emissiveIntensity: 0.5,
-      metalness: 0.65,
-      roughness: 0.28,
-    });
-    const wingGeo = new THREE.BoxGeometry(0.58, 0.035, 0.22);
-    const wingL = new THREE.Mesh(wingGeo, wingMat);
-    wingL.position.set(-0.36, 0.02, 0);
-    wingL.rotation.set(0.08, 0, 0.14);
-    const wingR = wingL.clone();
-    wingR.position.x = 0.36;
-    wingR.rotation.z = -0.14;
-    g.add(wingL, wingR);
-
-    const bellMat = new THREE.MeshPhysicalMaterial({
-      color: 0x2a1008,
-      emissive: 0xff5500,
-      emissiveIntensity: 0.95,
-      metalness: 0.55,
-      roughness: 0.32,
-      clearcoat: 0.55,
-      clearcoatRoughness: 0.25,
-    });
-    const bell = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.09, 0.16, 12), bellMat);
-    bell.rotation.x = Math.PI / 2;
-    bell.position.set(0, 0, -0.32);
-    bell.castShadow = true;
-    g.add(bell);
-
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.06, 10, 8),
-      new THREE.MeshBasicMaterial({ color: 0xffffcc, transparent: true, opacity: 0.95 }),
-    );
-    core.position.set(0, 0, -0.4);
-    g.add(core);
-
-    const plumeMat = new THREE.MeshBasicMaterial({
-      color: 0xff9944,
-      transparent: true,
-      opacity: 0.32,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    const plume = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.32, 10, 1, true), plumeMat);
-    plume.rotation.x = -Math.PI / 2;
-    plume.position.set(0, 0, -0.5);
-    g.add(plume);
-
-    const haloOuter = new THREE.Mesh(
-      new THREE.TorusGeometry(0.52, 0.014, 8, 40),
-      new THREE.MeshBasicMaterial({
-        color: 0xffee99,
-        transparent: true,
-        opacity: 0.2,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
-    );
-    haloOuter.rotation.x = Math.PI / 2;
-    haloOuter.position.y = -0.02;
-    g.add(haloOuter);
-
-    const haloInner = new THREE.Mesh(
-      new THREE.RingGeometry(0.34, 0.48, 36),
-      new THREE.MeshBasicMaterial({
-        color: 0x66ffff,
-        transparent: true,
-        opacity: 0.12,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    );
-    haloInner.rotation.x = -Math.PI / 2;
-    haloInner.position.y = -0.035;
-    g.add(haloInner);
-
     g.userData.jetpackPickup = true;
     g.userData.bobBaseY = bobBaseY;
-    g.userData.plume = plume;
-    g.userData.plumeMat = plumeMat;
-    g.userData.haloOuter = haloOuter;
-    g.userData.haloInner = haloInner;
-    g.userData.haloInnerMat = haloInner.material as THREE.MeshBasicMaterial;
     g.userData.phase = Math.random() * Math.PI * 2;
 
     this.worldGroup.add(g);
@@ -1952,18 +1945,19 @@ export class Game {
       const bb = (g.userData.bobBaseY as number) ?? 1.02;
       g.position.y = bb + Math.sin(t) * 0.1;
 
-      const plume = g.userData.plume as THREE.Mesh | undefined;
-      const plumeMat = g.userData.plumeMat as THREE.MeshBasicMaterial | undefined;
-      if (plume && plumeMat) {
-        const f = aliveT * 20;
-        const s = 0.82 + Math.sin(f) * 0.22;
-        plume.scale.set(s, 0.7 + Math.sin(f * 1.1) * 0.28, s);
-        plumeMat.opacity = 0.22 + Math.sin(f * 0.9) * 0.14;
+      const flames = g.userData.flameMeshes as THREE.Mesh[] | undefined;
+      const flameMat = g.userData.flameMat as THREE.MeshBasicMaterial | undefined;
+      const flameCoreMat = g.userData.flameCoreMat as THREE.MeshBasicMaterial | undefined;
+      const fp = aliveT * 22 + ph;
+      if (flames) {
+        for (const fl of flames) {
+          const core = fl.material === flameCoreMat;
+          const sy = core ? 0.86 + Math.sin(fp * 1.15) * 0.22 : 0.9 + Math.sin(fp) * 0.2;
+          fl.scale.set(1, sy, 1);
+        }
       }
-      const ho = g.userData.haloOuter as THREE.Mesh | undefined;
-      if (ho) ho.rotation.z += dt * 0.55;
-      const hiMat = g.userData.haloInnerMat as THREE.MeshBasicMaterial | undefined;
-      if (hiMat) hiMat.opacity = 0.08 + Math.sin(aliveT * 3.1 + ph) * 0.07;
+      if (flameMat) flameMat.opacity = 0.78 + Math.sin(fp * 0.88) * 0.14;
+      if (flameCoreMat) flameCoreMat.opacity = 0.42 + Math.sin(fp * 1.05) * 0.12;
     }
 
     if (this.mysteryBoxPickup) {
