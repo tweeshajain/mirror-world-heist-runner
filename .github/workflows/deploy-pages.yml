@@ -25,6 +25,9 @@ jobs:
       - run: npm run build
         env:
           VITE_BASE: /mirror-world-heist-runner/
+          # Optional: set repo secrets to bake keys in instead of using public/supabase-config.json
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
       - name: Publish site to gh-pages branch
         uses: peaceiris/actions-gh-pages@v4
         with:

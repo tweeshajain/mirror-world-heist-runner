@@ -41,12 +41,28 @@ export async function resolveSupabaseClient(): Promise<SupabaseClient | null> {
       }
 
       try {
-        const res = await fetch(`${normalizePublicBase()}supabase-config.json`, { cache: "no-store" });
-        if (!res.ok) {
+        const base = normalizePublicBase();
+        const candidateUrls = [
+          new URL("supabase-config.json", location.href).href,
+          `${location.origin}${base}supabase-config.json`,
+        ];
+        const tried = new Set<string>();
+        let res: Response | null = null;
+        for (const u of candidateUrls) {
+          if (tried.has(u)) continue;
+          tried.add(u);
+          const r = await fetch(u, { cache: "no-store" });
+          if (r.ok) {
+            res = r;
+            break;
+          }
+        }
+        if (!res?.ok) {
           if (import.meta.env.DEV) {
             console.info(
-              "[leaderboard] No valid VITE_SUPABASE_* env; public/supabase-config.json returned HTTP",
-              res.status,
+              "[leaderboard] No valid VITE_SUPABASE_* env; supabase-config.json not found (tried",
+              [...tried].join(", "),
+              ").",
             );
           }
           return null;
