@@ -39,6 +39,7 @@ const yourRank = document.getElementById("your-rank") as HTMLParagraphElement;
 const top5List = document.getElementById("top5-list") as HTMLOListElement;
 const top5Heading = document.getElementById("top5-heading") as HTMLParagraphElement;
 const leaderboardErr = document.getElementById("leaderboard-err") as HTMLParagraphElement;
+const leaderboardSetupHint = document.getElementById("leaderboard-setup-hint") as HTMLParagraphElement;
 
 const SYS_ERR_LINES = [
   "CONTROL BUS SIGNATURE DRIFT",
@@ -81,11 +82,17 @@ async function populateGameOverLeaderboard(score: number, session: number): Prom
   top5Heading.hidden = true;
   top5List.hidden = true;
   top5List.innerHTML = "";
+  leaderboardSetupHint.hidden = true;
+  leaderboardSetupHint.textContent = "";
 
   if (!isLeaderboardConfigured()) {
     leaderboardStatus.hidden = false;
     leaderboardStatus.textContent =
-      "Global leaderboard: add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (see .env.example), then run supabase/game_scores.sql in the SQL Editor.";
+      "Online leaderboard is not connected, so your rank and the top 5 list cannot load.";
+    leaderboardSetupHint.hidden = false;
+    leaderboardSetupHint.textContent = import.meta.env.DEV
+      ? "For local dev: add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (or VITE_SUPABASE_PUBLISHABLE_KEY) to a file named .env.local in the project root, restart the dev server, and run supabase/game_scores.sql once in the Supabase SQL Editor."
+      : "This build was created without Supabase environment variables. Rebuild with VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY set, or play using npm run dev and a .env.local file.";
     return;
   }
 

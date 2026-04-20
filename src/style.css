@@ -578,6 +578,13 @@ kbd {
   opacity: 0.88;
 }
 
+.leaderboard-setup-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  opacity: 0.72;
+}
+
 .your-rank {
   margin: 0 0 10px;
   font-size: 1.05rem;
