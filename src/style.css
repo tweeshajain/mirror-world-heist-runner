@@ -146,6 +146,13 @@ html.mystery-screen-flip {
   box-shadow: 0 0 16px rgba(255, 160, 220, 0.25);
 }
 
+.powerup-hud--life {
+  color: #ffe8ec;
+  background: rgba(52, 8, 22, 0.9);
+  border: 1px solid rgba(255, 120, 150, 0.55);
+  box-shadow: 0 0 16px rgba(255, 80, 110, 0.28);
+}
+
 .mystery-flip-hud {
   pointer-events: none;
   align-self: stretch;

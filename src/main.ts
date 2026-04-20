@@ -27,6 +27,7 @@ const btnPause = document.getElementById("btn-pause") as HTMLButtonElement;
 const btnResume = document.getElementById("btn-resume") as HTMLButtonElement;
 const jetpackHud = document.getElementById("jetpack-hud") as HTMLDivElement;
 const mysteryBoxHud = document.getElementById("mystery-box-hud") as HTMLDivElement;
+const extraLifeHud = document.getElementById("extra-life-hud") as HTMLDivElement;
 const mysteryFlipHud = document.getElementById("mystery-flip-hud") as HTMLDivElement;
 
 const SYS_ERR_LINES = [
@@ -126,6 +127,8 @@ function wipeScreenJuice(): void {
   jetpackHud.textContent = "";
   mysteryBoxHud.hidden = true;
   mysteryBoxHud.textContent = "";
+  extraLifeHud.hidden = true;
+  extraLifeHud.textContent = "";
   mysteryFlipHud.hidden = true;
   mysteryFlipHud.textContent = "";
 }
@@ -162,6 +165,10 @@ function setHud(): void {
   const mysteryPickLine = live ? game.getMysteryPickupHudLine() : "";
   mysteryBoxHud.hidden = !live || !mysteryPickLine;
   mysteryBoxHud.textContent = mysteryPickLine;
+
+  const extraLifeLine = live ? game.getExtraLifeHudLine() : "";
+  extraLifeHud.hidden = !live || !extraLifeLine;
+  extraLifeHud.textContent = extraLifeLine;
 
   const warn = live ? game.getMirrorWarningProgress() : 0;
   document.documentElement.style.setProperty("--mirror-warn", String(warn));

@@ -51,13 +51,18 @@ const JETPACK_PICKUP_Z_OFFSET = 48;
 /** Spawn this many seconds of travel farther ahead so the pickup is visible earlier for lane changes. */
 const JETPACK_PICKUP_LEAD_TIME_S = 1;
 const COIN_SCORE_BONUS = 100;
-const COIN_SPAWN_INTERVAL_MS = 380;
+/** Jetpack flight only: base interval between coin spawns (ms). */
+const JETPACK_COIN_SPAWN_INTERVAL_MS = 150;
+const JETPACK_COIN_SPAWN_JITTER_MS = 70;
 
 /** After this score, a mystery box spawns once per run (wall-clock delay below). */
 const MYSTERY_BOX_SCORE_TRIGGER = 7000;
 /** If the first mystery box is missed, a second pickup can be scheduled after this score. */
 const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
 const MYSTERY_BOX_PICKUP_Z_OFFSET = 58;
+/** At or above this score with exactly one life left, a one-time extra-life pickup can spawn this run. */
+const EXTRA_LIFE_SCORE_TRIGGER = 10000;
+const EXTRA_LIFE_PICKUP_Z_OFFSET = 54;
 /** Collecting the box flips the entire view for this long (game keeps running). */
 const MYSTERY_FLIP_DURATION_MS = 10000;
 /** Obstacle immunity: first window right as upside-down starts; second right after view resets. */
@@ -101,6 +106,13 @@ interface MysteryBoxPickup {
   lane: (typeof LANES)[number];
   z: number;
   /** Wall clock when spawned — despawn ignored until grace elapses so it cannot vanish same-frame. */
+  spawnedAtMs: number;
+}
+
+interface ExtraLifePickup {
+  mesh: THREE.Group;
+  lane: (typeof LANES)[number];
+  z: number;
   spawnedAtMs: number;
 }
 
@@ -264,6 +276,12 @@ export class Game {
   /** For one-shot post-flip immunity when `mysteryScreenFlipUntil` elapses. */
   private prevMysteryFlipActive = false;
 
+  /** Once per run: wall-clock when extra-life pickup should appear (0 = not scheduled). */
+  private extraLifeSpawnAtMs = 0;
+  /** True after the offer is collected or missed for good this run. */
+  private extraLifePickupUsedThisRun = false;
+  private extraLifePickup: ExtraLifePickup | null = null;
+
   private running = false;
   private gameOver = false;
   private gameOverReason = "";
@@ -422,6 +440,7 @@ export class Game {
     if (this.mysteryScreenFlipUntil > t0) this.mysteryScreenFlipUntil = bump(this.mysteryScreenFlipUntil);
     if (this.mysteryFlipImmunityUntil > t0) this.mysteryFlipImmunityUntil = bump(this.mysteryFlipImmunityUntil);
     if (this.mysteryPostFlipImmunityUntil > t0) this.mysteryPostFlipImmunityUntil = bump(this.mysteryPostFlipImmunityUntil);
+    if (this.extraLifeSpawnAtMs > t0) this.extraLifeSpawnAtMs = bump(this.extraLifeSpawnAtMs);
     if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
     if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
     if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
@@ -484,6 +503,14 @@ export class Game {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
     if (this.mysteryBoxPickup) return "Mystery box ahead";
+    return "";
+  }
+
+  /** Extra-life pickup cue (score ≥10k, one life only, once per run). */
+  getExtraLifeHudLine(): string {
+    if (!this.isRunning()) return "";
+    if (this.userPaused) return "";
+    if (this.extraLifePickup) return "Extra life ahead — stay in your lane";
     return "";
   }
 
@@ -568,6 +595,12 @@ export class Game {
     this.mysteryFlipImmunityUntil = 0;
     this.mysteryPostFlipImmunityUntil = 0;
     this.prevMysteryFlipActive = false;
+    this.extraLifeSpawnAtMs = 0;
+    this.extraLifePickupUsedThisRun = false;
+    if (this.extraLifePickup) {
+      this.worldGroup.remove(this.extraLifePickup.mesh);
+      this.extraLifePickup = null;
+    }
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -1642,7 +1675,7 @@ export class Game {
     this.jetpackEnteredFlightThisRun = true;
     const now = performance.now();
     this.jetpackFlyingUntil = now + JETPACK_FLY_DURATION_MS;
-    this.jetpackNextCoinAtMs = now + 280;
+    this.jetpackNextCoinAtMs = now + 120;
     this.announce("JETPACK LIVE — 5s · lane into coins", 2200);
   }
 
@@ -1756,9 +1789,94 @@ export class Game {
     }
   }
 
-  private spawnFlightCoin(): void {
+  private spawnExtraLifePickup(): void {
+    if (this.lives !== 1) {
+      this.extraLifeSpawnAtMs = 0;
+      this.extraLifePickupUsedThisRun = true;
+      return;
+    }
+    const laneIdx = THREE.MathUtils.clamp(this.targetLane, 0, 2) as 0 | 1 | 2;
+    const lane = LANES[laneIdx]!;
+    const z = -EXTRA_LIFE_PICKUP_Z_OFFSET - this.distance;
+    const g = new THREE.Group();
+    const bobY = 1.05;
+    g.position.set(lane * LANE_WIDTH, bobY, z);
+
+    const heartMat = new THREE.MeshPhysicalMaterial({
+      color: 0xff3355,
+      emissive: 0xff0022,
+      emissiveIntensity: 0.55,
+      metalness: 0.35,
+      roughness: 0.22,
+      clearcoat: 0.85,
+      clearcoatRoughness: 0.12,
+    });
+    const lobe = new THREE.Mesh(new THREE.SphereGeometry(0.1, 14, 12), heartMat);
+    lobe.position.set(-0.08, 0.1, 0);
+    const lobeR = lobe.clone();
+    lobeR.position.x = 0.08;
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.16, 12), heartMat);
+    tip.rotation.z = Math.PI;
+    tip.position.set(0, -0.05, 0);
+    g.add(lobe, lobeR, tip);
+
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xffccd0,
+      transparent: true,
+      opacity: 0.35,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.02, 8, 40), ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = -0.02;
+    g.add(ring);
+    g.userData.extraLifePickup = true;
+    g.userData.bobY = bobY;
+    g.userData.phase = Math.random() * Math.PI * 2;
+    g.userData.ringMat = ringMat;
+
+    this.worldGroup.add(g);
+    this.extraLifePickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
+    this.announce("EXTRA LIFE — one pickup in your lane · drive through it", 3200);
+  }
+
+  private checkExtraLifePickup(): void {
+    if (!this.extraLifePickup || this.isJetpackFlying()) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.extraLifePickup.mesh.getWorldPosition(this.owp);
+    const oz = this.owp.z;
+    const ox = this.owp.x;
+    if (Math.abs(oz - PLAYER_Z) > 1.45) return;
+    if (Math.abs(ox - this.player.position.x) > 1.25) return;
+    this.worldGroup.remove(this.extraLifePickup.mesh);
+    this.extraLifePickup = null;
+    this.extraLifePickupUsedThisRun = true;
+    this.extraLifeSpawnAtMs = 0;
+    this.lives = Math.min(STARTING_LIVES, this.lives + 1);
+    this.nearMissFlashUntil = performance.now() + 160;
+    this.announce("EXTRA LIFE — you earned another chance", 2600);
+  }
+
+  private updateExtraLifePickupDespawn(): void {
+    if (!this.extraLifePickup) return;
+    if (performance.now() - this.extraLifePickup.spawnedAtMs < 650) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.extraLifePickup.mesh.getWorldPosition(this.owp);
+    const wz = this.owp.z;
+    if (wz > DESPAWN_BEHIND + 12) {
+      this.worldGroup.remove(this.extraLifePickup.mesh);
+      this.extraLifePickup = null;
+      this.extraLifePickupUsedThisRun = true;
+      this.extraLifeSpawnAtMs = 0;
+    }
+  }
+
+  /** `zOffset` shifts spawn along track (e.g. paired bonus coin slightly closer). */
+  private spawnFlightCoin(zOffset = 0): void {
     const lane = LANES[Math.floor(Math.random() * 3)]!;
-    const z = -SPAWN_AHEAD * 0.52 - this.distance;
+    const z = -SPAWN_AHEAD * 0.52 - this.distance + zOffset;
     const g = new THREE.Group();
     const floatBase = JETPACK_FLY_HEIGHT - 0.55 + Math.random() * 0.35;
     g.position.set(lane * LANE_WIDTH, floatBase, z);
@@ -1770,10 +1888,13 @@ export class Game {
     g.userData.floatPh = floatPh;
     g.userData.spin = spin;
 
-    const ringMat = new THREE.MeshPhysicalMaterial({
+    /** Thin cylinder along forward Z: round face toward the chase camera, not a flat ground disc. */
+    const thickness = 0.05;
+    const radius = 0.19;
+    const faceMat = new THREE.MeshPhysicalMaterial({
       color: 0xffe8b8,
       emissive: 0xffcc44,
-      emissiveIntensity: 0.3,
+      emissiveIntensity: 0.32,
       metalness: 1,
       roughness: 0.12,
       clearcoat: 1,
@@ -1782,52 +1903,36 @@ export class Game {
       iridescenceIOR: 1.33,
       iridescenceThicknessRange: [90, 280],
     });
-    g.userData.ringMat = ringMat;
+    g.userData.ringMat = faceMat;
 
-    const coin = new THREE.Mesh(new THREE.TorusGeometry(0.185, 0.048, 12, 32), ringMat);
+    const coin = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 32), faceMat);
     coin.rotation.x = Math.PI / 2;
     coin.castShadow = true;
     g.add(coin);
 
-    const hub = new THREE.Mesh(
-      new THREE.CircleGeometry(0.095, 28),
-      new THREE.MeshStandardMaterial({
-        color: 0xffc94d,
-        emissive: 0xffaa22,
-        emissiveIntensity: 0.55,
-        metalness: 0.88,
-        roughness: 0.22,
-      }),
-    );
-    hub.rotation.x = -Math.PI / 2;
-    hub.position.y = 0.002;
-    g.add(hub);
-
-    const bevel = new THREE.Mesh(
-      new THREE.TorusGeometry(0.198, 0.018, 6, 32),
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(radius + 0.006, 0.022, 8, 32),
       new THREE.MeshStandardMaterial({
         color: 0xfff2cc,
         emissive: 0xffee88,
-        emissiveIntensity: 0.35,
+        emissiveIntensity: 0.38,
         metalness: 0.95,
         roughness: 0.15,
       }),
     );
-    bevel.rotation.x = Math.PI / 2;
-    bevel.position.y = -0.004;
-    g.add(bevel);
+    rim.rotation.x = Math.PI / 2;
+    g.add(rim);
 
     const glowMat = new THREE.MeshBasicMaterial({
       color: 0xffeeaa,
       transparent: true,
-      opacity: 0.26,
+      opacity: 0.22,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const glowRing = new THREE.Mesh(new THREE.RingGeometry(0.26, 0.38, 36), glowMat);
-    glowRing.rotation.x = -Math.PI / 2;
-    glowRing.position.y = -0.018;
+    const glowRing = new THREE.Mesh(new THREE.TorusGeometry(radius + 0.08, 0.03, 8, 36), glowMat);
+    glowRing.rotation.x = Math.PI / 2;
     g.add(glowRing);
     g.userData.glowRing = glowRing;
     g.userData.glowMat = glowMat;
@@ -1868,6 +1973,17 @@ export class Game {
       mg.rotation.y += dt * 1.65;
       mg.rotation.x = Math.sin(aliveT * 2.2 + ph) * 0.12;
       mg.position.y = bobBase + Math.sin(aliveT * 3.4 + ph) * 0.09;
+    }
+
+    if (this.extraLifePickup) {
+      const eg = this.extraLifePickup.mesh;
+      const ph = (eg.userData.phase as number) ?? 0;
+      const bobBase = (eg.userData.bobY as number) ?? 1.05;
+      eg.rotation.y += dt * 1.9;
+      eg.rotation.z = Math.sin(aliveT * 2.4 + ph) * 0.1;
+      eg.position.y = bobBase + Math.sin(aliveT * 3.2 + ph) * 0.1;
+      const rm = eg.userData.ringMat as THREE.MeshBasicMaterial | undefined;
+      if (rm) rm.opacity = 0.22 + Math.sin(aliveT * 5 + ph) * 0.14;
     }
 
     for (const fc of this.flightCoins) {
@@ -2274,7 +2390,25 @@ export class Game {
       ) {
         this.spawnJetpackPickup();
       }
-      if (this.jetpackPickup || this.flightCoins.length > 0 || this.mysteryBoxPickup) {
+      if (
+        !this.extraLifePickupUsedThisRun &&
+        this.extraLifeSpawnAtMs === 0 &&
+        !this.extraLifePickup &&
+        this.score >= EXTRA_LIFE_SCORE_TRIGGER &&
+        this.lives === 1
+      ) {
+        this.extraLifeSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
+      }
+      if (
+        !this.extraLifePickupUsedThisRun &&
+        this.extraLifeSpawnAtMs > 0 &&
+        nowTick >= this.extraLifeSpawnAtMs &&
+        !this.extraLifePickup &&
+        !this.isJetpackFlying()
+      ) {
+        this.spawnExtraLifePickup();
+      }
+      if (this.jetpackPickup || this.flightCoins.length > 0 || this.mysteryBoxPickup || this.extraLifePickup) {
         this.animatePickups(dt, this.aliveTime);
       }
       if (this.jetpackPickup) {
@@ -2285,10 +2419,16 @@ export class Game {
         this.checkMysteryBoxPickup();
         this.updateMysteryBoxPickupDespawn();
       }
+      if (this.extraLifePickup) {
+        this.checkExtraLifePickup();
+        this.updateExtraLifePickupDespawn();
+      }
       if (this.isJetpackFlying()) {
         if (nowTick >= this.jetpackNextCoinAtMs) {
-          this.jetpackNextCoinAtMs = nowTick + COIN_SPAWN_INTERVAL_MS + Math.random() * 200;
+          this.jetpackNextCoinAtMs =
+            nowTick + JETPACK_COIN_SPAWN_INTERVAL_MS + Math.random() * JETPACK_COIN_SPAWN_JITTER_MS;
           this.spawnFlightCoin();
+          if (Math.random() < 0.42) this.spawnFlightCoin(-1.15);
         }
         this.updateFlightCoinsCollect();
       }
@@ -2347,6 +2487,11 @@ export class Game {
     if (this.mysteryBoxPickup) {
       this.worldGroup.remove(this.mysteryBoxPickup.mesh);
       this.mysteryBoxPickup = null;
+    }
+    this.extraLifeSpawnAtMs = 0;
+    if (this.extraLifePickup) {
+      this.worldGroup.remove(this.extraLifePickup.mesh);
+      this.extraLifePickup = null;
     }
     this.mysteryScreenFlipUntil = 0;
     this.mysteryFlipImmunityUntil = 0;
