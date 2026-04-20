@@ -516,7 +516,100 @@ kbd {
 
 .final {
   font-size: 1.1rem;
+  margin: 0 0 16px;
+}
+
+.player-name-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 20px;
+  max-width: 320px;
+  width: 100%;
+}
+
+.player-name-row label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(200, 245, 255, 0.85);
+}
+
+#player-name {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 245, 255, 0.35);
+  background: rgba(4, 10, 22, 0.92);
+  color: #e8fbff;
+  font-size: 1rem;
+}
+
+#player-name:focus {
+  outline: 2px solid rgba(0, 245, 255, 0.45);
+  outline-offset: 2px;
+}
+
+.player-name-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.65;
+  line-height: 1.35;
+}
+
+.leaderboard-panel {
+  width: 100%;
+  max-width: min(92vw, 360px);
   margin: 0 0 20px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  text-align: left;
+  background: rgba(8, 6, 20, 0.92);
+  border: 1px solid rgba(0, 245, 255, 0.22);
+  box-shadow: 0 0 18px rgba(0, 200, 255, 0.12);
+}
+
+.leaderboard-status {
+  margin: 0 0 8px;
+  font-size: 0.88rem;
+  opacity: 0.88;
+}
+
+.your-rank {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #b8fff8;
+}
+
+.top5-heading {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(180, 250, 255, 0.75);
+}
+
+.top5-list {
+  margin: 0;
+  padding-left: 1.35rem;
+  line-height: 1.55;
+  font-size: 0.9rem;
+}
+
+.top5-list li {
+  margin: 0.15em 0;
+}
+
+.leaderboard-err {
+  margin: 8px 0 0;
+  font-size: 0.85rem;
+  color: #ffb0b8;
 }
 
 body.mirror-flash #c {

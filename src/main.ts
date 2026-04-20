@@ -1,5 +1,9 @@
 import "./style.css";
 import { Game } from "./Game";
+import { saveRunAndGetLeaderboardSummary } from "./leaderboard";
+import { isLeaderboardConfigured } from "./supabase";
+
+const PLAYER_NAME_STORAGE = "mirror-heist-display-name";
 
 const canvas = document.getElementById("c") as HTMLCanvasElement;
 const cWrap = document.getElementById("c-wrap") as HTMLDivElement;
@@ -29,6 +33,12 @@ const jetpackHud = document.getElementById("jetpack-hud") as HTMLDivElement;
 const mysteryBoxHud = document.getElementById("mystery-box-hud") as HTMLDivElement;
 const extraLifeHud = document.getElementById("extra-life-hud") as HTMLDivElement;
 const mysteryFlipHud = document.getElementById("mystery-flip-hud") as HTMLDivElement;
+const playerNameInput = document.getElementById("player-name") as HTMLInputElement;
+const leaderboardStatus = document.getElementById("leaderboard-status") as HTMLParagraphElement;
+const yourRank = document.getElementById("your-rank") as HTMLParagraphElement;
+const top5List = document.getElementById("top5-list") as HTMLOListElement;
+const top5Heading = document.getElementById("top5-heading") as HTMLParagraphElement;
+const leaderboardErr = document.getElementById("leaderboard-err") as HTMLParagraphElement;
 
 const SYS_ERR_LINES = [
   "CONTROL BUS SIGNATURE DRIFT",
@@ -41,6 +51,73 @@ const game = new Game(canvas);
 
 let prevNearMiss = 0;
 let prevLifeLostFrozen = false;
+/** Bumped when a new run starts so late leaderboard responses do not paint over a fresh game. */
+let leaderboardSession = 0;
+let gameOverLeaderboardRequested = false;
+
+function persistPlayerName(): void {
+  const v = playerNameInput.value.trim().slice(0, 24) || "Runner";
+  playerNameInput.value = v;
+  localStorage.setItem(PLAYER_NAME_STORAGE, v);
+}
+
+function loadPlayerName(): void {
+  const s = localStorage.getItem(PLAYER_NAME_STORAGE);
+  playerNameInput.value = s && s.trim() ? s.trim().slice(0, 24) : "Runner";
+}
+
+function getDisplayName(): string {
+  return playerNameInput.value.trim().slice(0, 24) || "Runner";
+}
+
+loadPlayerName();
+playerNameInput.addEventListener("change", persistPlayerName);
+playerNameInput.addEventListener("blur", persistPlayerName);
+
+async function populateGameOverLeaderboard(score: number, session: number): Promise<void> {
+  leaderboardErr.hidden = true;
+  leaderboardErr.textContent = "";
+  yourRank.hidden = true;
+  top5Heading.hidden = true;
+  top5List.hidden = true;
+  top5List.innerHTML = "";
+
+  if (!isLeaderboardConfigured()) {
+    leaderboardStatus.hidden = false;
+    leaderboardStatus.textContent =
+      "Global leaderboard: add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (see .env.example), then run supabase/game_scores.sql in the SQL Editor.";
+    return;
+  }
+
+  leaderboardStatus.hidden = false;
+  leaderboardStatus.textContent = "Saving score and loading ranks…";
+
+  const res = await saveRunAndGetLeaderboardSummary(getDisplayName(), score);
+  if (session !== leaderboardSession) return;
+
+  if (!res.ok) {
+    leaderboardStatus.textContent = "";
+    leaderboardErr.hidden = false;
+    leaderboardErr.textContent = res.message;
+    return;
+  }
+
+  leaderboardStatus.textContent = "";
+  yourRank.hidden = false;
+  yourRank.textContent = `Your rank: #${res.rank.toLocaleString()}`;
+  top5Heading.hidden = false;
+  top5List.hidden = false;
+  for (const row of res.top5) {
+    const li = document.createElement("li");
+    li.textContent = `${row.player_name} — ${row.score.toLocaleString()}`;
+    top5List.appendChild(li);
+  }
+  if (res.top5.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "(No scores in the table yet)";
+    top5List.appendChild(li);
+  }
+}
 
 function ensureShatterShards(): void {
   const root = shatterOverlay;
@@ -261,12 +338,16 @@ function applyScreenVfx(): void {
 }
 
 function focusPlaySurface(): void {
+  leaderboardSession += 1;
+  gameOverLeaderboardRequested = false;
+  persistPlayerName();
   game.start();
   cWrap.focus({ preventScroll: true });
   canvas.focus({ preventScroll: true });
 }
 
 btnStart.addEventListener("click", () => {
+  persistPlayerName();
   startScreen.hidden = true;
   gameover.hidden = true;
   wipeScreenJuice();
@@ -301,6 +382,13 @@ function tick(): void {
     gameover.hidden = false;
     goReason.textContent = reason;
     finalScore.textContent = String(game.getScore());
+    if (!gameOverLeaderboardRequested) {
+      gameOverLeaderboardRequested = true;
+      const session = leaderboardSession;
+      void populateGameOverLeaderboard(game.getScore(), session);
+    }
+  } else if (!over) {
+    gameOverLeaderboardRequested = false;
   }
   requestAnimationFrame(tick);
 }

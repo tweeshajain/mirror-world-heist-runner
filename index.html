@@ -46,12 +46,31 @@
           <li>Mobile: swipe <strong>up</strong> jump · <strong>down</strong> slide ·
             <strong>left/right</strong> lanes</li>
         </ul>
+        <div class="player-name-row">
+          <label for="player-name">Leaderboard name</label>
+          <input
+            id="player-name"
+            type="text"
+            maxlength="24"
+            autocomplete="nickname"
+            placeholder="Runner"
+            aria-describedby="player-name-hint"
+          />
+          <p id="player-name-hint" class="player-name-hint">Shown with your score (max 24 characters).</p>
+        </div>
         <button id="btn-start" type="button">Run</button>
       </div>
       <div id="gameover" hidden>
         <h2>Run ended</h2>
         <p id="go-reason"></p>
         <p class="final">Score: <span id="final-score">0</span></p>
+        <div id="leaderboard-panel" class="leaderboard-panel">
+          <p id="leaderboard-status" class="leaderboard-status"></p>
+          <p id="your-rank" class="your-rank" hidden></p>
+          <p id="top5-heading" class="top5-heading" hidden>Global top 5</p>
+          <ol id="top5-list" class="top5-list" hidden></ol>
+          <p id="leaderboard-err" class="leaderboard-err" hidden></p>
+        </div>
         <button id="btn-retry" type="button">Retry</button>
       </div>
     </div>
