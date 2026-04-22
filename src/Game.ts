@@ -70,6 +70,9 @@ const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
 const MYSTERY_BOX_LATE_SCORE_TRIGGER = 14000;
 const MYSTERY_BOX_LATE_SPAWN_DELAY_MIN_MS = 2200;
 const MYSTERY_BOX_LATE_SPAWN_DELAY_MAX_MS = 4800;
+/** After any missed (non–14k-encore) mystery box, respawn this soon until the player collects one. */
+const MYSTERY_BOX_MISS_RETRY_MIN_MS = 2000;
+const MYSTERY_BOX_MISS_RETRY_MAX_MS = 4800;
 const MYSTERY_BOX_PICKUP_Z_OFFSET = 78;
 /** At or above this score with exactly one life left, a one-time extra-life pickup can spawn this run. */
 const EXTRA_LIFE_SCORE_TRIGGER = 10000;
@@ -307,10 +310,12 @@ export class Game {
   private jetpackNextCoinAtMs = 0;
 
   private mysteryBoxSpawnAtMs = 0;
-  /** True when no more mystery pickups this run (collected flip, or both pickups missed). */
+  /** True once the player has collected a mystery box (flip) this run, or after late encore miss. */
   private mysteryBoxUsedThisRun = false;
-  /** Mystery pickups placed this run (0–2). */
+  /** Mystery pickups placed this run (increments until a box is collected). */
   private mysteryBoxPickupSpawnsThisRun = 0;
+  /** True while the on-track pickup was spawned from the 14k encore (miss does not chain-retry). */
+  private mysteryBoxActivePickupFromLate14k = false;
   /** True once the player collects a box and the upside-down effect starts. */
   private mysteryBoxCollectedThisRun = false;
   private mysteryBoxPickup: MysteryBoxPickup | null = null;
@@ -709,6 +714,7 @@ export class Game {
     this.mysteryBoxSpawnAtMs = 0;
     this.mysteryBoxLateSpawnAtMs = 0;
     this.mysteryBoxLateWaveDone = false;
+    this.mysteryBoxActivePickupFromLate14k = false;
     this.mysteryBoxUsedThisRun = false;
     this.mysteryBoxPickupSpawnsThisRun = 0;
     this.mysteryBoxCollectedThisRun = false;
@@ -1878,6 +1884,7 @@ export class Game {
   }
 
   private spawnMysteryBoxPickup(fromLate14k = false): void {
+    this.mysteryBoxActivePickupFromLate14k = fromLate14k;
     /** After the first random spawn, place the box in the lane the player is steering toward so it stays in their path. */
     const laneTowardPlayer = this.mysteryBoxPickupSpawnsThisRun >= 1;
     const laneIdx = laneTowardPlayer
@@ -1930,11 +1937,13 @@ export class Game {
     const n = this.mysteryBoxPickupSpawnsThisRun;
     const msg = fromLate14k
       ? "MYSTERY BOX — 14k+ encore · drive through if you dare"
-      : n >= 3
-        ? "MYSTERY BOX — in your lane · last chance"
-        : n >= 2
-          ? "MYSTERY BOX — second chance · in your lane"
-          : "MYSTERY BOX — drive through it if you dare";
+      : n >= 4
+        ? "MYSTERY BOX — another chance · grab the flip"
+        : n >= 3
+          ? "MYSTERY BOX — in your lane · last chance"
+          : n >= 2
+            ? "MYSTERY BOX — second chance · in your lane"
+            : "MYSTERY BOX — drive through it if you dare";
     this.announce(msg, fromLate14k || n >= 2 ? 3000 : 2600);
     if (fromLate14k) this.mysteryBoxLateWaveDone = true;
   }
@@ -1949,6 +1958,7 @@ export class Game {
     if (Math.abs(oz - PLAYER_Z) > 1.55) return;
     if (Math.abs(ox - this.player.position.x) > 1.42) return;
     if (this.playerY > 1.68) return;
+    this.mysteryBoxActivePickupFromLate14k = false;
     this.worldGroup.remove(this.mysteryBoxPickup.mesh);
     this.mysteryBoxPickup = null;
     const now = performance.now();
@@ -1969,10 +1979,15 @@ export class Game {
     this.mysteryBoxPickup.mesh.getWorldPosition(this.owp);
     const wz = this.owp.z;
     if (wz > DESPAWN_BEHIND + 12) {
+      const fromLate = this.mysteryBoxActivePickupFromLate14k;
+      this.mysteryBoxActivePickupFromLate14k = false;
       this.worldGroup.remove(this.mysteryBoxPickup.mesh);
       this.mysteryBoxPickup = null;
-      if (this.mysteryBoxCollectedThisRun || this.mysteryBoxPickupSpawnsThisRun >= 3) {
+      const now = performance.now();
+      if (this.mysteryBoxCollectedThisRun) {
         this.mysteryBoxUsedThisRun = true;
+      } else if (!fromLate) {
+        this.mysteryBoxSpawnAtMs = now + randRange(MYSTERY_BOX_MISS_RETRY_MIN_MS, MYSTERY_BOX_MISS_RETRY_MAX_MS);
       }
     }
   }
