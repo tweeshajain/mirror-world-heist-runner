@@ -878,22 +878,25 @@ body.life-lost-frozen #c-wrap {
   }
 }
 
-/* Mystery door “void run” — darker + neon (Three.js fog also deepens in Game). */
+/* Mystery door “void run” — dark + vivid neon (brighter bloom read than flat crush). */
+html:has(body.rift-door-mode),
 body.rift-door-mode {
-  background: radial-gradient(ellipse 100% 55% at 50% 8%, rgba(140, 40, 220, 0.2), transparent 52%),
-    radial-gradient(ellipse 80% 45% at 92% 92%, rgba(0, 255, 230, 0.1), transparent 48%), #020008;
+  background: radial-gradient(ellipse 100% 55% at 50% 6%, rgba(160, 70, 255, 0.28), transparent 50%),
+    radial-gradient(ellipse 85% 50% at 88% 88%, rgba(0, 255, 240, 0.18), transparent 46%),
+    radial-gradient(ellipse 70% 40% at 12% 75%, rgba(0, 200, 255, 0.1), transparent 55%), #030510;
 }
 
 body.rift-door-mode #c-wrap {
-  filter: brightness(0.56) contrast(1.22) saturate(1.5) hue-rotate(-6deg)
-    drop-shadow(0 0 36px rgba(0, 255, 230, 0.14)) drop-shadow(0 0 52px rgba(255, 60, 200, 0.12));
+  filter: brightness(0.82) contrast(1.14) saturate(1.62) hue-rotate(-4deg)
+    drop-shadow(0 0 28px rgba(0, 255, 240, 0.35)) drop-shadow(0 0 56px rgba(0, 255, 255, 0.22))
+    drop-shadow(0 0 72px rgba(255, 80, 200, 0.16));
 }
 
 body.rift-door-mode #hud {
-  filter: drop-shadow(0 0 12px rgba(0, 255, 245, 0.22));
+  filter: drop-shadow(0 0 14px rgba(0, 255, 245, 0.38)) drop-shadow(0 0 28px rgba(180, 100, 255, 0.2));
 }
 
 body.rift-door-mode #score-row {
-  text-shadow: 0 0 14px rgba(0, 255, 255, 0.45), 0 0 22px rgba(255, 120, 255, 0.2);
+  text-shadow: 0 0 16px rgba(0, 255, 255, 0.55), 0 0 28px rgba(120, 255, 255, 0.28), 0 0 20px rgba(255, 100, 220, 0.22);
 }
 

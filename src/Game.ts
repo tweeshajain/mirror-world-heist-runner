@@ -89,11 +89,8 @@ const MYSTERY_FLIP_DURATION_MS = 10000;
 const MYSTERY_FLIP_IMMUNITY_MS = 2000;
 const MYSTERY_POST_FLIP_IMMUNITY_MS = 2000;
 
-/** First neon mystery door: schedule as soon as score crosses this (no extra wait). */
-const MYSTERY_DOOR_EARLY_SCORE_TRIGGER = 1000;
-const MYSTERY_DOOR_EARLY_SPAWN_DELAY_MS = 0;
-/** Second door wave after the early segment finishes (wall-clock delay below). */
-const MYSTERY_DOOR_LATE_SCORE_TRIGGER = 12000;
+/** Score gate for the neon mystery door portal (once per run; wall-clock delay below). */
+const MYSTERY_DOOR_SCORE_TRIGGER = 12000;
 const MYSTERY_DOOR_SPAWN_DELAY_MIN_MS = 2800;
 const MYSTERY_DOOR_SPAWN_DELAY_MAX_MS = 5200;
 /** If the first door is missed, respawn after this wall-clock delay (ms). */
@@ -106,6 +103,8 @@ const MYSTERY_DOOR_MODE_DURATION_MS = 10000;
 const MYSTERY_DOOR_SLOW_PHASE_MS = 3000;
 /** After mode ends (auto exit), obstacle hits ignored (ms). */
 const MYSTERY_DOOR_POST_IMMUNITY_MS = 2000;
+/** After driving through the door, obstacle hits ignored until void ends or this elapses (ms). */
+const MYSTERY_DOOR_ENTRY_IMMUNITY_MS = 2000;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -343,11 +342,9 @@ export class Game {
 
   /** Once per run: wall-clock when mystery door spawns (0 = not scheduled). */
   private mysteryDoorSpawnAtMs = 0;
-  /** True after the 1k early door wave ended (void exit or two misses). */
-  private mysteryDoorEarlyComplete = false;
-  /** True after the 12k late door wave ended. */
-  private mysteryDoorLateComplete = false;
-  /** Door pickups placed in the current wave (1 = first, 2 = retry; resets after each segment). */
+  /** True after the void run finishes (normal exit); not set on pickup misses — door retries until entered. */
+  private mysteryDoorWaveComplete = false;
+  /** Door pickups spawned this run (increments until the player enters the void). */
   private mysteryDoorPickupSpawnsThisRun = 0;
   private mysteryDoorPickup: MysteryDoorPickup | null = null;
   /** Exclusive end time for void run (performance.now); 0 = inactive. */
@@ -356,6 +353,8 @@ export class Game {
   private mysteryDoorSpikeFired = false;
   /** After void run ends, obstacle hits ignored until this time. */
   private mysteryDoorPostImmunityUntil = 0;
+  /** After entering the door (void starts), obstacle hits ignored until this time. */
+  private mysteryDoorEntryImmunityUntil = 0;
 
   private running = false;
   private gameOver = false;
@@ -523,6 +522,7 @@ export class Game {
     if (this.mysteryDoorModeUntil > t0) this.mysteryDoorModeUntil = bump(this.mysteryDoorModeUntil);
     if (this.mysteryDoorModeStartMs > t0) this.mysteryDoorModeStartMs = bump(this.mysteryDoorModeStartMs);
     if (this.mysteryDoorPostImmunityUntil > t0) this.mysteryDoorPostImmunityUntil = bump(this.mysteryDoorPostImmunityUntil);
+    if (this.mysteryDoorEntryImmunityUntil > t0) this.mysteryDoorEntryImmunityUntil = bump(this.mysteryDoorEntryImmunityUntil);
     if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
     if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
     if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
@@ -605,13 +605,13 @@ export class Game {
     return "Extra life incoming…";
   }
 
-  /** Mystery door portal + void-run countdown (1k early, 12k late). */
+  /** Mystery door portal + void-run countdown (12k+ gate). */
   getMysteryDoorHudLine(): string {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
     if (this.mysteryDoorPickup) {
       return this.mysteryDoorPickupSpawnsThisRun >= 2
-        ? "Mystery door — second chance · run through it"
+        ? "Mystery door — another try · run through it"
         : "Mystery door ahead — run through it";
     }
     const now = performance.now();
@@ -623,7 +623,7 @@ export class Game {
         : `VOID RUN — ${s.toFixed(1)}s left · SURGE (auto exit)`;
     }
     if (
-      !(this.mysteryDoorEarlyComplete && this.mysteryDoorLateComplete) &&
+      !this.mysteryDoorWaveComplete &&
       this.mysteryDoorSpawnAtMs > 0 &&
       this.mysteryDoorPickupSpawnsThisRun >= 1
     ) {
@@ -738,13 +738,13 @@ export class Game {
       this.extraLifePickup = null;
     }
     this.mysteryDoorSpawnAtMs = 0;
-    this.mysteryDoorEarlyComplete = false;
-    this.mysteryDoorLateComplete = false;
+    this.mysteryDoorWaveComplete = false;
     this.mysteryDoorPickupSpawnsThisRun = 0;
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
     this.mysteryDoorSpikeFired = false;
     this.mysteryDoorPostImmunityUntil = 0;
+    this.mysteryDoorEntryImmunityUntil = 0;
     if (this.mysteryDoorPickup) {
       this.worldGroup.remove(this.mysteryDoorPickup.mesh);
       this.mysteryDoorPickup = null;
@@ -910,6 +910,11 @@ export class Game {
   }
 
   private applyVisualLayer(mirror: boolean): void {
+    const now = performance.now();
+    if (this.mysteryDoorModeUntil > 0 && now < this.mysteryDoorModeUntil) {
+      return;
+    }
+
     document.body.classList.toggle("layer-mirror-city", mirror);
 
     const bg = mirror ? this.fogColorMirror : this.fogColorReal;
@@ -1477,6 +1482,7 @@ export class Game {
     );
     grid.rotation.x = -Math.PI / 2;
     grid.position.y = 0.014;
+    grid.userData.trackNeonGrid = true;
     group.add(grid);
 
     for (const lane of LANES) {
@@ -2051,10 +2057,13 @@ export class Game {
     this.mysteryDoorPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
     this.mysteryDoorPickupSpawnsThisRun += 1;
     const n = this.mysteryDoorPickupSpawnsThisRun;
-    this.announce(
-      n >= 2 ? "MYSTERY DOOR — second chance · run through" : "MYSTERY DOOR — run through the neon gate",
-      n >= 2 ? 3200 : 3000,
-    );
+    const msg =
+      n >= 4
+        ? "MYSTERY DOOR — another portal · run through"
+        : n >= 2
+          ? "MYSTERY DOOR — second chance · run through"
+          : "MYSTERY DOOR — run through the neon gate";
+    this.announce(msg, n >= 2 ? 3200 : 3000);
   }
 
   private checkMysteryDoorPickup(): void {
@@ -2073,8 +2082,10 @@ export class Game {
     this.mysteryDoorModeStartMs = now;
     this.mysteryDoorModeUntil = now + MYSTERY_DOOR_MODE_DURATION_MS;
     this.mysteryDoorSpikeFired = false;
+    this.mysteryDoorEntryImmunityUntil = now + MYSTERY_DOOR_ENTRY_IMMUNITY_MS;
     document.body.classList.add("rift-door-mode");
-    this.announce("VOID TUNNEL · slow… then SURGE · auto exit in 10s", 4200);
+    this.applyRiftDoorWorldVisuals();
+    this.announce("VOID TUNNEL · slow… then SURGE · auto exit in 10s · 2s hazard immunity", 4200);
   }
 
   private updateMysteryDoorPickupDespawn(now: number): void {
@@ -2086,45 +2097,67 @@ export class Game {
     if (wz > DESPAWN_BEHIND + 12) {
       this.worldGroup.remove(this.mysteryDoorPickup.mesh);
       this.mysteryDoorPickup = null;
-      if (this.mysteryDoorPickupSpawnsThisRun < 2) {
+      if (!this.mysteryDoorWaveComplete) {
         this.mysteryDoorSpawnAtMs = now + randRange(MYSTERY_DOOR_RETRY_DELAY_MIN_MS, MYSTERY_DOOR_RETRY_DELAY_MAX_MS);
         this.announce("MYSTERY DOOR MISSED · another portal in 7–10s", 2800);
-      } else {
-        this.finishCurrentMysteryDoorSegment();
       }
     }
   }
 
-  private finishCurrentMysteryDoorSegment(): void {
-    this.mysteryDoorSpawnAtMs = 0;
-    if (!this.mysteryDoorEarlyComplete) {
-      this.mysteryDoorEarlyComplete = true;
-      this.mysteryDoorPickupSpawnsThisRun = 0;
-    } else {
-      this.mysteryDoorLateComplete = true;
-    }
-  }
-
   private applyRiftDoorWorldVisuals(): void {
-    const deep = new THREE.Color(0x020208);
+    const deep = new THREE.Color(0x040a14);
+    const fogTint = new THREE.Color(0x061222);
     this.scene.background.copy(deep);
     if (this.scene.fog instanceof THREE.Fog) {
-      this.scene.fog.color.copy(deep);
-      this.scene.fog.near = 12;
-      this.scene.fog.far = 54;
+      this.scene.fog.color.copy(fogTint);
+      this.scene.fog.near = 16;
+      this.scene.fog.far = 78;
     }
-    this.ambient.intensity = 0.2;
-    this.dirLight.intensity = 0.55;
-    this.fillLight.intensity = 0.48;
-    this.dirLight.color.setHex(0x5cfff0);
-    this.fillLight.color.setHex(0xff55ee);
+    this.ambient.intensity = 0.38;
+    this.dirLight.intensity = 0.92;
+    this.fillLight.intensity = 0.62;
+    this.dirLight.color.setHex(0x7dfff8);
+    this.fillLight.color.setHex(0xff7adb);
+
+    const neonEmissive = 0x00fff4;
+    this.worldGroup.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh) || Array.isArray(obj.material)) return;
+      const mat = obj.material;
+      if (obj.userData.neon && mat instanceof THREE.MeshStandardMaterial) {
+        mat.emissive.setHex(neonEmissive);
+        mat.emissiveIntensity = 2.08;
+        mat.color.setHex(0x000510);
+      }
+      if (obj.userData.trackNeonGrid && mat instanceof THREE.MeshStandardMaterial) {
+        mat.emissive.setHex(0x00ffff);
+        mat.emissiveIntensity = 0.95;
+        mat.opacity = 0.34;
+      }
+      if (obj.userData.cityGlass && mat instanceof THREE.MeshPhysicalMaterial) {
+        mat.emissive.setHex(0x003848);
+        mat.emissiveIntensity = 0.42;
+        mat.envMapIntensity = 1.38;
+      }
+      if (obj.userData.groundWet && mat instanceof THREE.MeshPhysicalMaterial) {
+        mat.color.setHex(0x061a24);
+        mat.emissive.setHex(0x042028);
+        mat.emissiveIntensity = 0.22;
+        mat.roughness = 0.09;
+      }
+      if (obj.userData.holoAd && mat instanceof THREE.MeshStandardMaterial) {
+        mat.emissiveIntensity = 1.12;
+        mat.opacity = 0.68;
+      }
+    });
   }
 
   private exitMysteryDoorMode(now: number): void {
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
     this.mysteryDoorSpikeFired = false;
-    this.finishCurrentMysteryDoorSegment();
+    this.mysteryDoorEntryImmunityUntil = 0;
+    this.mysteryDoorSpawnAtMs = 0;
+    this.mysteryDoorWaveComplete = true;
     document.body.classList.remove("rift-door-mode");
     this.applyVisualLayer(this.mirrorLayer);
     this.mysteryDoorPostImmunityUntil = now + MYSTERY_DOOR_POST_IMMUNITY_MS;
@@ -2532,7 +2565,8 @@ export class Game {
       nowHit < this.mysteryFlipImmunityUntil ||
       nowHit < this.mysteryPostFlipImmunityUntil ||
       nowHit < this.lifeLostHitImmunityUntil ||
-      nowHit < this.mysteryDoorPostImmunityUntil
+      nowHit < this.mysteryDoorPostImmunityUntil ||
+      nowHit < this.mysteryDoorEntryImmunityUntil
     ) {
       return;
     }
@@ -2643,7 +2677,6 @@ export class Game {
           vmax *= 1.2;
           accel = 2.35;
         }
-        this.applyRiftDoorWorldVisuals();
       }
       this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * accel);
       this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, vMin, vmax);
@@ -2834,25 +2867,18 @@ export class Game {
         this.spawnExtraLifePickup();
       }
       if (
-        !(this.mysteryDoorEarlyComplete && this.mysteryDoorLateComplete) &&
+        !this.mysteryDoorWaveComplete &&
         !this.isMysteryDoorMode() &&
         this.mysteryDoorSpawnAtMs === 0 &&
         !this.mysteryDoorPickup &&
-        !this.isJetpackFlying()
+        !this.isJetpackFlying() &&
+        this.score >= MYSTERY_DOOR_SCORE_TRIGGER
       ) {
-        if (!this.mysteryDoorEarlyComplete && this.score >= MYSTERY_DOOR_EARLY_SCORE_TRIGGER) {
-          this.mysteryDoorSpawnAtMs = nowTick + MYSTERY_DOOR_EARLY_SPAWN_DELAY_MS;
-        } else if (
-          this.mysteryDoorEarlyComplete &&
-          !this.mysteryDoorLateComplete &&
-          this.score >= MYSTERY_DOOR_LATE_SCORE_TRIGGER
-        ) {
-          this.mysteryDoorSpawnAtMs =
-            nowTick + randRange(MYSTERY_DOOR_SPAWN_DELAY_MIN_MS, MYSTERY_DOOR_SPAWN_DELAY_MAX_MS);
-        }
+        this.mysteryDoorSpawnAtMs =
+          nowTick + randRange(MYSTERY_DOOR_SPAWN_DELAY_MIN_MS, MYSTERY_DOOR_SPAWN_DELAY_MAX_MS);
       }
       if (
-        !(this.mysteryDoorEarlyComplete && this.mysteryDoorLateComplete) &&
+        !this.mysteryDoorWaveComplete &&
         this.mysteryDoorSpawnAtMs > 0 &&
         nowTick >= this.mysteryDoorSpawnAtMs &&
         !this.mysteryDoorPickup &&
@@ -2923,6 +2949,10 @@ export class Game {
     } else if (!this.running) {
       this.prevMysteryFlipActive = false;
     }
+
+    if (this.running && !this.gameOver && this.isMysteryDoorMode()) {
+      this.applyRiftDoorWorldVisuals();
+    }
   }
 
   private endGame(reason: string): void {
@@ -2956,13 +2986,13 @@ export class Game {
       this.extraLifePickup = null;
     }
     this.mysteryDoorSpawnAtMs = 0;
-    this.mysteryDoorEarlyComplete = false;
-    this.mysteryDoorLateComplete = false;
+    this.mysteryDoorWaveComplete = false;
     this.mysteryDoorPickupSpawnsThisRun = 0;
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
     this.mysteryDoorSpikeFired = false;
     this.mysteryDoorPostImmunityUntil = 0;
+    this.mysteryDoorEntryImmunityUntil = 0;
     if (this.mysteryDoorPickup) {
       this.worldGroup.remove(this.mysteryDoorPickup.mesh);
       this.mysteryDoorPickup = null;
