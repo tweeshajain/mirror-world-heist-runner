@@ -153,6 +153,14 @@ html.mystery-screen-flip {
   box-shadow: 0 0 16px rgba(255, 80, 110, 0.28);
 }
 
+.powerup-hud--door {
+  color: #eef8ff;
+  background: rgba(10, 4, 28, 0.94);
+  border: 1px solid rgba(170, 110, 255, 0.55);
+  box-shadow: 0 0 22px rgba(0, 255, 230, 0.28), 0 0 36px rgba(255, 70, 200, 0.15);
+  text-shadow: 0 0 10px rgba(0, 255, 240, 0.35);
+}
+
 .mystery-flip-hud {
   pointer-events: none;
   align-self: stretch;
@@ -868,5 +876,24 @@ body.life-lost-frozen #c-wrap {
     opacity: 0.38;
     filter: brightness(0.72);
   }
+}
+
+/* Mystery door “void run” — darker + neon (Three.js fog also deepens in Game). */
+body.rift-door-mode {
+  background: radial-gradient(ellipse 100% 55% at 50% 8%, rgba(140, 40, 220, 0.2), transparent 52%),
+    radial-gradient(ellipse 80% 45% at 92% 92%, rgba(0, 255, 230, 0.1), transparent 48%), #020008;
+}
+
+body.rift-door-mode #c-wrap {
+  filter: brightness(0.56) contrast(1.22) saturate(1.5) hue-rotate(-6deg)
+    drop-shadow(0 0 36px rgba(0, 255, 230, 0.14)) drop-shadow(0 0 52px rgba(255, 60, 200, 0.12));
+}
+
+body.rift-door-mode #hud {
+  filter: drop-shadow(0 0 12px rgba(0, 255, 245, 0.22));
+}
+
+body.rift-door-mode #score-row {
+  text-shadow: 0 0 14px rgba(0, 255, 255, 0.45), 0 0 22px rgba(255, 120, 255, 0.2);
 }
 

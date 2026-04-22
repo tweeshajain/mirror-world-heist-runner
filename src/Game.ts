@@ -43,6 +43,11 @@ const LIFE_LOST_HIT_IMMUNITY_MS = 2000;
 const JETPACK_SCORE_TRIGGER = 4000;
 /** If the first jetpack pickup is missed, a second pickup can be scheduled after this score. */
 const JETPACK_RETRY_SCORE_TRIGGER = 5000;
+/** After the early jetpack arc ends, one bonus pickup can be scheduled once score reaches this. */
+const JETPACK_LATE_SCORE_TRIGGER = 12000;
+/** Wall-clock delay after crossing `JETPACK_LATE_SCORE_TRIGGER` before the bonus jetpack spawns. */
+const JETPACK_LATE_SPAWN_DELAY_MIN_MS = 2000;
+const JETPACK_LATE_SPAWN_DELAY_MAX_MS = 4000;
 /** Wall-clock delay (few seconds) after score crosses a gate before jetpack / mystery pickups spawn. */
 const PICKUP_SPAWN_DELAY_MIN_MS = 450;
 const PICKUP_SPAWN_DELAY_MAX_MS = 3200;
@@ -76,6 +81,18 @@ const MYSTERY_FLIP_DURATION_MS = 10000;
 /** Obstacle immunity: first window right as upside-down starts; second right after view resets. */
 const MYSTERY_FLIP_IMMUNITY_MS = 2000;
 const MYSTERY_POST_FLIP_IMMUNITY_MS = 2000;
+
+/** Score gate for the neon “mystery door” portal (once per run). */
+const MYSTERY_DOOR_SCORE_TRIGGER = 12000;
+const MYSTERY_DOOR_SPAWN_DELAY_MIN_MS = 2800;
+const MYSTERY_DOOR_SPAWN_DELAY_MAX_MS = 5200;
+const MYSTERY_DOOR_PICKUP_Z_OFFSET = 88;
+/** Wall-clock duration after entering the door (slow → surge → auto exit). */
+const MYSTERY_DOOR_MODE_DURATION_MS = 10000;
+/** First segment: run slower than normal. */
+const MYSTERY_DOOR_SLOW_PHASE_MS = 3000;
+/** After mode ends (auto exit), obstacle hits ignored (ms). */
+const MYSTERY_DOOR_POST_IMMUNITY_MS = 2000;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -118,6 +135,13 @@ interface MysteryBoxPickup {
 }
 
 interface ExtraLifePickup {
+  mesh: THREE.Group;
+  lane: (typeof LANES)[number];
+  z: number;
+  spawnedAtMs: number;
+}
+
+interface MysteryDoorPickup {
   mesh: THREE.Group;
   lane: (typeof LANES)[number];
   z: number;
@@ -259,10 +283,16 @@ export class Game {
   private jetpackSpawnAtMs = 0;
   /** True after jetpack sequence finished (flew once, or both pickups missed). */
   private jetpackUsedThisRun = false;
-  /** How many jetpack pickups have been placed this run (0–2). */
+  /** How many jetpack pickups have been placed this run (early arc 0–2, plus optional late bonus). */
   private jetpackPickupSpawnsThisRun = 0;
   /** True once the player grabs a pickup and enters flight. */
   private jetpackEnteredFlightThisRun = false;
+  /** Wall-clock spawn time for the post-12k bonus jetpack (0 = not scheduled). */
+  private jetpackLateSpawnAtMs = 0;
+  /** True after the late jetpack was collected, flown, or missed. */
+  private jetpackLateWaveDone = false;
+  /** True while the late bonus pickup is on the field or its flight has not ended yet. */
+  private jetpackPendingLateResolve = false;
   private jetpackPickup: JetpackPickup | null = null;
   /** While > 0 and `now <` this value, player is in jetpack flight. */
   private jetpackFlyingUntil = 0;
@@ -291,6 +321,18 @@ export class Game {
   /** True after the offer is collected or missed for good this run. */
   private extraLifePickupUsedThisRun = false;
   private extraLifePickup: ExtraLifePickup | null = null;
+
+  /** Once per run: wall-clock when mystery door spawns (0 = not scheduled). */
+  private mysteryDoorSpawnAtMs = 0;
+  /** True after the door was missed or the void run finished. */
+  private mysteryDoorWaveComplete = false;
+  private mysteryDoorPickup: MysteryDoorPickup | null = null;
+  /** Exclusive end time for void run (performance.now); 0 = inactive. */
+  private mysteryDoorModeUntil = 0;
+  private mysteryDoorModeStartMs = 0;
+  private mysteryDoorSpikeFired = false;
+  /** After void run ends, obstacle hits ignored until this time. */
+  private mysteryDoorPostImmunityUntil = 0;
 
   private running = false;
   private gameOver = false;
@@ -445,6 +487,7 @@ export class Game {
     if (this.mirrorProtocolImmunityUntil > t0) this.mirrorProtocolImmunityUntil = bump(this.mirrorProtocolImmunityUntil);
     if (this.jetpackPostImmunityUntil > t0) this.jetpackPostImmunityUntil = bump(this.jetpackPostImmunityUntil);
     if (this.jetpackSpawnAtMs > t0) this.jetpackSpawnAtMs = bump(this.jetpackSpawnAtMs);
+    if (this.jetpackLateSpawnAtMs > t0) this.jetpackLateSpawnAtMs = bump(this.jetpackLateSpawnAtMs);
     if (this.jetpackFlyingUntil > t0) this.jetpackFlyingUntil = bump(this.jetpackFlyingUntil);
     if (this.jetpackNextCoinAtMs > t0) this.jetpackNextCoinAtMs = bump(this.jetpackNextCoinAtMs);
     if (this.mysteryBoxSpawnAtMs > t0) this.mysteryBoxSpawnAtMs = bump(this.mysteryBoxSpawnAtMs);
@@ -452,6 +495,10 @@ export class Game {
     if (this.mysteryFlipImmunityUntil > t0) this.mysteryFlipImmunityUntil = bump(this.mysteryFlipImmunityUntil);
     if (this.mysteryPostFlipImmunityUntil > t0) this.mysteryPostFlipImmunityUntil = bump(this.mysteryPostFlipImmunityUntil);
     if (this.extraLifeSpawnAtMs > t0) this.extraLifeSpawnAtMs = bump(this.extraLifeSpawnAtMs);
+    if (this.mysteryDoorSpawnAtMs > t0) this.mysteryDoorSpawnAtMs = bump(this.mysteryDoorSpawnAtMs);
+    if (this.mysteryDoorModeUntil > t0) this.mysteryDoorModeUntil = bump(this.mysteryDoorModeUntil);
+    if (this.mysteryDoorModeStartMs > t0) this.mysteryDoorModeStartMs = bump(this.mysteryDoorModeStartMs);
+    if (this.mysteryDoorPostImmunityUntil > t0) this.mysteryDoorPostImmunityUntil = bump(this.mysteryDoorPostImmunityUntil);
     if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
     if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
     if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
@@ -534,6 +581,29 @@ export class Game {
     return "Extra life incoming…";
   }
 
+  /** Mystery door portal + void-run countdown (12k+ gate). */
+  getMysteryDoorHudLine(): string {
+    if (!this.isRunning()) return "";
+    if (this.userPaused) return "";
+    if (this.mysteryDoorPickup) return "Mystery door ahead — run through it";
+    const now = performance.now();
+    if (this.isMysteryDoorMode()) {
+      const s = Math.max(0, (this.mysteryDoorModeUntil - now) / 1000);
+      const phase = now - this.mysteryDoorModeStartMs < MYSTERY_DOOR_SLOW_PHASE_MS ? "slow" : "surge";
+      return phase === "slow"
+        ? `VOID RUN — ${s.toFixed(1)}s left · slow pull`
+        : `VOID RUN — ${s.toFixed(1)}s left · SURGE (auto exit)`;
+    }
+    return "";
+  }
+
+  /** True during the 10s void experience after passing the mystery door. */
+  isMysteryDoorMode(): boolean {
+    if (!this.isRunning()) return false;
+    const now = performance.now();
+    return this.mysteryDoorModeUntil > 0 && now < this.mysteryDoorModeUntil;
+  }
+
   private isJetpackFlying(): boolean {
     return this.jetpackFlyingUntil > 0 && performance.now() < this.jetpackFlyingUntil;
   }
@@ -594,6 +664,9 @@ export class Game {
     this.mirrorProtocolImmunityUntil = 0;
     this.jetpackPostImmunityUntil = 0;
     this.jetpackSpawnAtMs = 0;
+    this.jetpackLateSpawnAtMs = 0;
+    this.jetpackLateWaveDone = false;
+    this.jetpackPendingLateResolve = false;
     this.jetpackUsedThisRun = false;
     this.jetpackPickupSpawnsThisRun = 0;
     this.jetpackEnteredFlightThisRun = false;
@@ -622,6 +695,17 @@ export class Game {
       this.worldGroup.remove(this.extraLifePickup.mesh);
       this.extraLifePickup = null;
     }
+    this.mysteryDoorSpawnAtMs = 0;
+    this.mysteryDoorWaveComplete = false;
+    this.mysteryDoorModeUntil = 0;
+    this.mysteryDoorModeStartMs = 0;
+    this.mysteryDoorSpikeFired = false;
+    this.mysteryDoorPostImmunityUntil = 0;
+    if (this.mysteryDoorPickup) {
+      this.worldGroup.remove(this.mysteryDoorPickup.mesh);
+      this.mysteryDoorPickup = null;
+    }
+    document.body.classList.remove("rift-door-mode");
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -1694,7 +1778,7 @@ export class Game {
     return root;
   }
 
-  private spawnJetpackPickup(): void {
+  private spawnJetpackPickup(fromLateScoreGate = false): void {
     const v = THREE.MathUtils.clamp(this.velocityZ, 16, 52);
     const leadZ = JETPACK_PICKUP_Z_OFFSET + v * JETPACK_PICKUP_LEAD_TIME_S;
     const pickupZ = -leadZ - this.distance;
@@ -1715,11 +1799,15 @@ export class Game {
     this.worldGroup.add(g);
     this.jetpackPickup = { mesh: g, lane, z };
     this.jetpackPickupSpawnsThisRun += 1;
+    if (fromLateScoreGate) this.jetpackPendingLateResolve = true;
+    const n = this.jetpackPickupSpawnsThisRun;
     this.announce(
-      this.jetpackPickupSpawnsThisRun >= 2
-        ? "JETPACK — second chance · drive through it"
-        : "JETPACK READY — drive through it",
-      2400,
+      fromLateScoreGate
+        ? "JETPACK — 12k+ bonus · drive through it"
+        : n >= 2
+          ? "JETPACK — second chance · drive through it"
+          : "JETPACK READY — drive through it",
+      fromLateScoreGate ? 2800 : 2400,
     );
   }
 
@@ -1747,6 +1835,10 @@ export class Game {
     if (wz > DESPAWN_BEHIND + 12) {
       this.worldGroup.remove(this.jetpackPickup.mesh);
       this.jetpackPickup = null;
+      if (this.jetpackPendingLateResolve) {
+        this.jetpackPendingLateResolve = false;
+        this.jetpackLateWaveDone = true;
+      }
       if (this.jetpackEnteredFlightThisRun || this.jetpackPickupSpawnsThisRun >= 2) {
         this.jetpackUsedThisRun = true;
       }
@@ -1849,6 +1941,119 @@ export class Game {
         this.mysteryBoxUsedThisRun = true;
       }
     }
+  }
+
+  /** Tall neon portal frame + glow plane (drive-through pickup). */
+  private buildMysteryDoorPickupMesh(): THREE.Group {
+    const root = new THREE.Group();
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0x0a0618,
+      emissive: 0x00ffd0,
+      emissiveIntensity: 1.1,
+      metalness: 0.65,
+      roughness: 0.22,
+    });
+    const postW = 0.22;
+    const postH = 2.35;
+    const postGeo = new THREE.BoxGeometry(postW, postH, postW);
+    const postL = new THREE.Mesh(postGeo, frameMat);
+    postL.position.set(-1.05, postH * 0.5 + 0.05, 0);
+    postL.castShadow = true;
+    const postR = postL.clone();
+    postR.position.x = 1.05;
+    const lintel = new THREE.Mesh(new THREE.BoxGeometry(2.35, 0.2, 0.24), frameMat);
+    lintel.position.set(0, postH + 0.15, 0);
+    lintel.castShadow = true;
+    root.add(postL, postR, lintel);
+
+    const portalMat = new THREE.MeshBasicMaterial({
+      color: 0xaa66ff,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const portal = new THREE.Mesh(new THREE.PlaneGeometry(1.85, 2.05), portalMat);
+    portal.position.set(0, postH * 0.52 + 0.06, 0.02);
+    root.add(portal);
+    root.userData.portalMat = portalMat;
+    root.userData.mysteryDoorPickup = true;
+    return root;
+  }
+
+  private spawnMysteryDoorPickup(): void {
+    const laneIdx = THREE.MathUtils.clamp(this.targetLane, 0, 2) as 0 | 1 | 2;
+    const pickupZ = -MYSTERY_DOOR_PICKUP_Z_OFFSET - this.distance;
+    const { lane, z } = this.resolvePickupLaneAndZ(laneIdx, pickupZ);
+    const g = this.buildMysteryDoorPickupMesh();
+    g.scale.setScalar(1.15);
+    const bobY = 0.05;
+    g.position.set(lane * LANE_WIDTH, bobY, z);
+    g.userData.bobY = bobY;
+    g.userData.phase = Math.random() * Math.PI * 2;
+    this.worldGroup.add(g);
+    this.mysteryDoorPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
+    this.announce("MYSTERY DOOR — run through the neon gate", 3000);
+  }
+
+  private checkMysteryDoorPickup(): void {
+    if (!this.mysteryDoorPickup) return;
+    if (this.isJetpackFlying()) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.mysteryDoorPickup.mesh.getWorldPosition(this.owp);
+    const oz = this.owp.z;
+    const ox = this.owp.x;
+    if (Math.abs(oz - PLAYER_Z) > 1.75) return;
+    if (Math.abs(ox - this.player.position.x) > 1.55) return;
+    if (this.playerY > 2.35) return;
+    this.worldGroup.remove(this.mysteryDoorPickup.mesh);
+    this.mysteryDoorPickup = null;
+    const now = performance.now();
+    this.mysteryDoorModeStartMs = now;
+    this.mysteryDoorModeUntil = now + MYSTERY_DOOR_MODE_DURATION_MS;
+    this.mysteryDoorSpikeFired = false;
+    document.body.classList.add("rift-door-mode");
+    this.announce("VOID TUNNEL · slow… then SURGE · auto exit in 10s", 4200);
+  }
+
+  private updateMysteryDoorPickupDespawn(now: number): void {
+    if (!this.mysteryDoorPickup) return;
+    if (now - this.mysteryDoorPickup.spawnedAtMs < 650) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.mysteryDoorPickup.mesh.getWorldPosition(this.owp);
+    const wz = this.owp.z;
+    if (wz > DESPAWN_BEHIND + 12) {
+      this.worldGroup.remove(this.mysteryDoorPickup.mesh);
+      this.mysteryDoorPickup = null;
+      this.mysteryDoorWaveComplete = true;
+    }
+  }
+
+  private applyRiftDoorWorldVisuals(): void {
+    const deep = new THREE.Color(0x020208);
+    this.scene.background.copy(deep);
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.color.copy(deep);
+      this.scene.fog.near = 12;
+      this.scene.fog.far = 54;
+    }
+    this.ambient.intensity = 0.2;
+    this.dirLight.intensity = 0.55;
+    this.fillLight.intensity = 0.48;
+    this.dirLight.color.setHex(0x5cfff0);
+    this.fillLight.color.setHex(0xff55ee);
+  }
+
+  private exitMysteryDoorMode(now: number): void {
+    this.mysteryDoorModeUntil = 0;
+    this.mysteryDoorModeStartMs = 0;
+    this.mysteryDoorSpikeFired = false;
+    this.mysteryDoorWaveComplete = true;
+    document.body.classList.remove("rift-door-mode");
+    this.applyVisualLayer(this.mirrorLayer);
+    this.mysteryDoorPostImmunityUntil = now + MYSTERY_DOOR_POST_IMMUNITY_MS;
+    this.announce("EXIT SEALED · back to normal · 2s immunity", 3200);
   }
 
   private spawnExtraLifePickup(): void {
@@ -2050,6 +2255,16 @@ export class Game {
       if (rm) rm.opacity = 0.22 + Math.sin(aliveT * 5 + ph) * 0.14;
     }
 
+    if (this.mysteryDoorPickup) {
+      const dg = this.mysteryDoorPickup.mesh;
+      const ph = (dg.userData.phase as number) ?? 0;
+      const bobBase = (dg.userData.bobY as number) ?? 0.05;
+      dg.rotation.y += dt * 0.9;
+      dg.position.y = bobBase + Math.sin(aliveT * 2.8 + ph) * 0.06;
+      const pm = dg.userData.portalMat as THREE.MeshBasicMaterial | undefined;
+      if (pm) pm.opacity = 0.38 + Math.sin(aliveT * 6 + ph) * 0.18;
+    }
+
     for (const fc of this.flightCoins) {
       if (fc.collected) continue;
       const cg = fc.mesh;
@@ -2241,7 +2456,8 @@ export class Game {
       nowHit < this.jetpackPostImmunityUntil ||
       nowHit < this.mysteryFlipImmunityUntil ||
       nowHit < this.mysteryPostFlipImmunityUntil ||
-      nowHit < this.lifeLostHitImmunityUntil
+      nowHit < this.lifeLostHitImmunityUntil ||
+      nowHit < this.mysteryDoorPostImmunityUntil
     ) {
       return;
     }
@@ -2301,6 +2517,10 @@ export class Game {
 
   update(): void {
     const dt = Math.min(this.clock.getDelta(), 0.05);
+    const nowWall = performance.now();
+    if (this.running && !this.gameOver && this.mysteryDoorModeUntil > 0 && nowWall >= this.mysteryDoorModeUntil) {
+      this.exitMysteryDoorMode(nowWall);
+    }
     const lifeFrozen =
       this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
     const simFrozen = lifeFrozen || this.userPaused;
@@ -2312,6 +2532,10 @@ export class Game {
         this.jetpackFlyingUntil = 0;
         this.clearFlightCoins();
         this.jetpackUsedThisRun = true;
+        if (this.jetpackPendingLateResolve) {
+          this.jetpackPendingLateResolve = false;
+          this.jetpackLateWaveDone = true;
+        }
         this.announce("JETPACK OFF · 2s immunity", 2000);
       }
 
@@ -2323,10 +2547,31 @@ export class Game {
         Math.floor(this.score / SCORE_SPEED_MILESTONE),
       );
       const scoreSpeedBoost = scoreMilestones * SPEED_BONUS_PER_MILESTONE;
-      const vmax = 50 + scoreMilestones * VMAX_BONUS_PER_MILESTONE;
-      const targetV = 19.5 + this.aliveTime * 0.95 * diffRamp + scoreSpeedBoost;
-      this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * 1.85);
-      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, 14, vmax);
+      let vmax = 50 + scoreMilestones * VMAX_BONUS_PER_MILESTONE;
+      let targetV = 19.5 + this.aliveTime * 0.95 * diffRamp + scoreSpeedBoost;
+      let vMin = 14;
+      let accel = 1.85;
+      if (this.mysteryDoorModeUntil > 0 && nowTick < this.mysteryDoorModeUntil) {
+        const e = nowTick - this.mysteryDoorModeStartMs;
+        if (e < MYSTERY_DOOR_SLOW_PHASE_MS) {
+          targetV *= 0.48;
+          vmax *= 0.78;
+          vMin *= 0.82;
+          accel = 1.15;
+        } else {
+          if (!this.mysteryDoorSpikeFired) {
+            this.mysteryDoorSpikeFired = true;
+            this.velocityZ = THREE.MathUtils.clamp(this.velocityZ * 1.48, 22, vmax * 1.22);
+            this.announce("VOID SURGE", 1600);
+          }
+          targetV *= 1.38;
+          vmax *= 1.2;
+          accel = 2.35;
+        }
+        this.applyRiftDoorWorldVisuals();
+      }
+      this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * accel);
+      this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, vMin, vmax);
 
       this.distance += this.velocityZ * dt;
       this.aliveTime += dt;
@@ -2421,6 +2666,17 @@ export class Game {
           this.jetpackSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
         }
       }
+      if (
+        this.jetpackUsedThisRun &&
+        !this.jetpackLateWaveDone &&
+        this.jetpackLateSpawnAtMs === 0 &&
+        !this.jetpackPickup &&
+        this.jetpackFlyingUntil === 0 &&
+        this.score >= JETPACK_LATE_SCORE_TRIGGER
+      ) {
+        this.jetpackLateSpawnAtMs =
+          nowTick + randRange(JETPACK_LATE_SPAWN_DELAY_MIN_MS, JETPACK_LATE_SPAWN_DELAY_MAX_MS);
+      }
       if (!this.mysteryBoxUsedThisRun && this.mysteryBoxSpawnAtMs === 0 && !this.mysteryBoxPickup && !this.isJetpackFlying()) {
         if (this.mysteryBoxPickupSpawnsThisRun === 0 && this.score >= MYSTERY_BOX_SCORE_TRIGGER) {
           this.mysteryBoxSpawnAtMs = nowTick + randRange(PICKUP_SPAWN_DELAY_MIN_MS, PICKUP_SPAWN_DELAY_MAX_MS);
@@ -2454,7 +2710,16 @@ export class Game {
         !this.jetpackPickup &&
         this.jetpackFlyingUntil === 0
       ) {
-        this.spawnJetpackPickup();
+        this.spawnJetpackPickup(false);
+      }
+      if (
+        this.jetpackLateSpawnAtMs > 0 &&
+        nowTick >= this.jetpackLateSpawnAtMs &&
+        !this.jetpackPickup &&
+        this.jetpackFlyingUntil === 0
+      ) {
+        this.jetpackLateSpawnAtMs = 0;
+        this.spawnJetpackPickup(true);
       }
       if (
         !this.extraLifePickupUsedThisRun &&
@@ -2474,7 +2739,28 @@ export class Game {
       ) {
         this.spawnExtraLifePickup();
       }
-      if (this.jetpackPickup || this.flightCoins.length > 0 || this.mysteryBoxPickup || this.extraLifePickup) {
+      if (
+        !this.mysteryDoorWaveComplete &&
+        !this.isMysteryDoorMode() &&
+        this.mysteryDoorSpawnAtMs === 0 &&
+        !this.mysteryDoorPickup &&
+        !this.isJetpackFlying() &&
+        this.score >= MYSTERY_DOOR_SCORE_TRIGGER
+      ) {
+        this.mysteryDoorSpawnAtMs =
+          nowTick + randRange(MYSTERY_DOOR_SPAWN_DELAY_MIN_MS, MYSTERY_DOOR_SPAWN_DELAY_MAX_MS);
+      }
+      if (
+        !this.mysteryDoorWaveComplete &&
+        this.mysteryDoorSpawnAtMs > 0 &&
+        nowTick >= this.mysteryDoorSpawnAtMs &&
+        !this.mysteryDoorPickup &&
+        !this.isJetpackFlying()
+      ) {
+        this.mysteryDoorSpawnAtMs = 0;
+        this.spawnMysteryDoorPickup();
+      }
+      if (this.jetpackPickup || this.flightCoins.length > 0 || this.mysteryBoxPickup || this.extraLifePickup || this.mysteryDoorPickup) {
         this.animatePickups(dt, this.aliveTime);
       }
       if (this.jetpackPickup) {
@@ -2488,6 +2774,10 @@ export class Game {
       if (this.extraLifePickup) {
         this.checkExtraLifePickup();
         this.updateExtraLifePickupDespawn();
+      }
+      if (this.mysteryDoorPickup) {
+        this.checkMysteryDoorPickup();
+        this.updateMysteryDoorPickupDespawn(nowTick);
       }
       if (this.isJetpackFlying()) {
         if (nowTick >= this.jetpackNextCoinAtMs) {
@@ -2544,6 +2834,9 @@ export class Game {
     this.jetpackFlyingUntil = 0;
     this.jetpackPostImmunityUntil = 0;
     this.jetpackSpawnAtMs = 0;
+    this.jetpackLateSpawnAtMs = 0;
+    this.jetpackLateWaveDone = false;
+    this.jetpackPendingLateResolve = false;
     if (this.jetpackPickup) {
       this.worldGroup.remove(this.jetpackPickup.mesh);
       this.jetpackPickup = null;
@@ -2559,12 +2852,22 @@ export class Game {
       this.worldGroup.remove(this.extraLifePickup.mesh);
       this.extraLifePickup = null;
     }
+    this.mysteryDoorSpawnAtMs = 0;
+    this.mysteryDoorWaveComplete = false;
+    this.mysteryDoorModeUntil = 0;
+    this.mysteryDoorModeStartMs = 0;
+    this.mysteryDoorSpikeFired = false;
+    this.mysteryDoorPostImmunityUntil = 0;
+    if (this.mysteryDoorPickup) {
+      this.worldGroup.remove(this.mysteryDoorPickup.mesh);
+      this.mysteryDoorPickup = null;
+    }
     this.mysteryScreenFlipUntil = 0;
     this.mysteryFlipImmunityUntil = 0;
     this.mysteryPostFlipImmunityUntil = 0;
     this.prevMysteryFlipActive = false;
 
-    document.body.classList.remove("mirror-warning", "mirror-flash");
+    document.body.classList.remove("mirror-warning", "mirror-flash", "rift-door-mode");
     this.mirrorAnnounceUntil = 0;
     this.vfxMirrorGlitchUntil = 0;
     this.vfxInvertWarpUntil = 0;

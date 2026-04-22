@@ -32,6 +32,7 @@ const btnResume = document.getElementById("btn-resume") as HTMLButtonElement;
 const jetpackHud = document.getElementById("jetpack-hud") as HTMLDivElement;
 const mysteryBoxHud = document.getElementById("mystery-box-hud") as HTMLDivElement;
 const extraLifeHud = document.getElementById("extra-life-hud") as HTMLDivElement;
+const mysteryDoorHud = document.getElementById("mystery-door-hud") as HTMLDivElement;
 const mysteryFlipHud = document.getElementById("mystery-flip-hud") as HTMLDivElement;
 const playerNameInput = document.getElementById("player-name") as HTMLInputElement;
 const leaderboardStatus = document.getElementById("leaderboard-status") as HTMLParagraphElement;
@@ -193,7 +194,7 @@ function wipeScreenJuice(): void {
   document.documentElement.style.setProperty("--vfx-danger", "0");
   document.documentElement.style.setProperty("--vfx-invert", "0");
   document.documentElement.style.setProperty("--near-miss", "0");
-  document.body.classList.remove("mirror-warning", "mirror-flash", "layer-mirror-city");
+  document.body.classList.remove("mirror-warning", "mirror-flash", "layer-mirror-city", "rift-door-mode");
   cWrap.classList.remove("vfx-glitching");
   scoreEl.classList.remove("near-miss-pop");
   sysErrOverlay.hidden = true;
@@ -216,6 +217,8 @@ function wipeScreenJuice(): void {
   mysteryBoxHud.textContent = "";
   extraLifeHud.hidden = true;
   extraLifeHud.textContent = "";
+  mysteryDoorHud.hidden = true;
+  mysteryDoorHud.textContent = "";
   mysteryFlipHud.hidden = true;
   mysteryFlipHud.textContent = "";
 }
@@ -257,6 +260,10 @@ function setHud(): void {
   extraLifeHud.hidden = !live || !extraLifeLine;
   extraLifeHud.textContent = extraLifeLine;
 
+  const mysteryDoorLine = live ? game.getMysteryDoorHudLine() : "";
+  mysteryDoorHud.hidden = !live || !mysteryDoorLine;
+  mysteryDoorHud.textContent = mysteryDoorLine;
+
   const warn = live ? game.getMirrorWarningProgress() : 0;
   document.documentElement.style.setProperty("--mirror-warn", String(warn));
   if (warn > 0) {
@@ -285,6 +292,7 @@ function setHud(): void {
 
   document.body.classList.toggle("game-running", live);
   document.body.classList.toggle("game-paused", live && game.isUserPaused());
+  document.body.classList.toggle("rift-door-mode", live && game.isMysteryDoorMode());
   document.documentElement.classList.toggle("mystery-screen-flip", live && game.isMysteryScreenFlipped());
   cWrap.setAttribute("aria-hidden", live ? "false" : "true");
 
