@@ -89,8 +89,11 @@ const MYSTERY_FLIP_DURATION_MS = 10000;
 const MYSTERY_FLIP_IMMUNITY_MS = 2000;
 const MYSTERY_POST_FLIP_IMMUNITY_MS = 2000;
 
-/** Score gate for the neon “mystery door” portal (once per run). */
-const MYSTERY_DOOR_SCORE_TRIGGER = 12000;
+/** First neon mystery door: schedule as soon as score crosses this (no extra wait). */
+const MYSTERY_DOOR_EARLY_SCORE_TRIGGER = 1000;
+const MYSTERY_DOOR_EARLY_SPAWN_DELAY_MS = 0;
+/** Second door wave after the early segment finishes (wall-clock delay below). */
+const MYSTERY_DOOR_LATE_SCORE_TRIGGER = 12000;
 const MYSTERY_DOOR_SPAWN_DELAY_MIN_MS = 2800;
 const MYSTERY_DOOR_SPAWN_DELAY_MAX_MS = 5200;
 /** If the first door is missed, respawn after this wall-clock delay (ms). */
@@ -340,9 +343,11 @@ export class Game {
 
   /** Once per run: wall-clock when mystery door spawns (0 = not scheduled). */
   private mysteryDoorSpawnAtMs = 0;
-  /** True after both door offers were missed or the void run finished. */
-  private mysteryDoorWaveComplete = false;
-  /** Door pickups placed this run (1 = first, 2 = retry after miss). */
+  /** True after the 1k early door wave ended (void exit or two misses). */
+  private mysteryDoorEarlyComplete = false;
+  /** True after the 12k late door wave ended. */
+  private mysteryDoorLateComplete = false;
+  /** Door pickups placed in the current wave (1 = first, 2 = retry; resets after each segment). */
   private mysteryDoorPickupSpawnsThisRun = 0;
   private mysteryDoorPickup: MysteryDoorPickup | null = null;
   /** Exclusive end time for void run (performance.now); 0 = inactive. */
@@ -600,7 +605,7 @@ export class Game {
     return "Extra life incoming…";
   }
 
-  /** Mystery door portal + void-run countdown (12k+ gate). */
+  /** Mystery door portal + void-run countdown (1k early, 12k late). */
   getMysteryDoorHudLine(): string {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
@@ -618,7 +623,7 @@ export class Game {
         : `VOID RUN — ${s.toFixed(1)}s left · SURGE (auto exit)`;
     }
     if (
-      !this.mysteryDoorWaveComplete &&
+      !(this.mysteryDoorEarlyComplete && this.mysteryDoorLateComplete) &&
       this.mysteryDoorSpawnAtMs > 0 &&
       this.mysteryDoorPickupSpawnsThisRun >= 1
     ) {
@@ -733,7 +738,8 @@ export class Game {
       this.extraLifePickup = null;
     }
     this.mysteryDoorSpawnAtMs = 0;
-    this.mysteryDoorWaveComplete = false;
+    this.mysteryDoorEarlyComplete = false;
+    this.mysteryDoorLateComplete = false;
     this.mysteryDoorPickupSpawnsThisRun = 0;
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
@@ -2084,8 +2090,18 @@ export class Game {
         this.mysteryDoorSpawnAtMs = now + randRange(MYSTERY_DOOR_RETRY_DELAY_MIN_MS, MYSTERY_DOOR_RETRY_DELAY_MAX_MS);
         this.announce("MYSTERY DOOR MISSED · another portal in 7–10s", 2800);
       } else {
-        this.mysteryDoorWaveComplete = true;
+        this.finishCurrentMysteryDoorSegment();
       }
+    }
+  }
+
+  private finishCurrentMysteryDoorSegment(): void {
+    this.mysteryDoorSpawnAtMs = 0;
+    if (!this.mysteryDoorEarlyComplete) {
+      this.mysteryDoorEarlyComplete = true;
+      this.mysteryDoorPickupSpawnsThisRun = 0;
+    } else {
+      this.mysteryDoorLateComplete = true;
     }
   }
 
@@ -2108,7 +2124,7 @@ export class Game {
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
     this.mysteryDoorSpikeFired = false;
-    this.mysteryDoorWaveComplete = true;
+    this.finishCurrentMysteryDoorSegment();
     document.body.classList.remove("rift-door-mode");
     this.applyVisualLayer(this.mirrorLayer);
     this.mysteryDoorPostImmunityUntil = now + MYSTERY_DOOR_POST_IMMUNITY_MS;
@@ -2818,18 +2834,25 @@ export class Game {
         this.spawnExtraLifePickup();
       }
       if (
-        !this.mysteryDoorWaveComplete &&
+        !(this.mysteryDoorEarlyComplete && this.mysteryDoorLateComplete) &&
         !this.isMysteryDoorMode() &&
         this.mysteryDoorSpawnAtMs === 0 &&
         !this.mysteryDoorPickup &&
-        !this.isJetpackFlying() &&
-        this.score >= MYSTERY_DOOR_SCORE_TRIGGER
+        !this.isJetpackFlying()
       ) {
-        this.mysteryDoorSpawnAtMs =
-          nowTick + randRange(MYSTERY_DOOR_SPAWN_DELAY_MIN_MS, MYSTERY_DOOR_SPAWN_DELAY_MAX_MS);
+        if (!this.mysteryDoorEarlyComplete && this.score >= MYSTERY_DOOR_EARLY_SCORE_TRIGGER) {
+          this.mysteryDoorSpawnAtMs = nowTick + MYSTERY_DOOR_EARLY_SPAWN_DELAY_MS;
+        } else if (
+          this.mysteryDoorEarlyComplete &&
+          !this.mysteryDoorLateComplete &&
+          this.score >= MYSTERY_DOOR_LATE_SCORE_TRIGGER
+        ) {
+          this.mysteryDoorSpawnAtMs =
+            nowTick + randRange(MYSTERY_DOOR_SPAWN_DELAY_MIN_MS, MYSTERY_DOOR_SPAWN_DELAY_MAX_MS);
+        }
       }
       if (
-        !this.mysteryDoorWaveComplete &&
+        !(this.mysteryDoorEarlyComplete && this.mysteryDoorLateComplete) &&
         this.mysteryDoorSpawnAtMs > 0 &&
         nowTick >= this.mysteryDoorSpawnAtMs &&
         !this.mysteryDoorPickup &&
@@ -2933,7 +2956,8 @@ export class Game {
       this.extraLifePickup = null;
     }
     this.mysteryDoorSpawnAtMs = 0;
-    this.mysteryDoorWaveComplete = false;
+    this.mysteryDoorEarlyComplete = false;
+    this.mysteryDoorLateComplete = false;
     this.mysteryDoorPickupSpawnsThisRun = 0;
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
