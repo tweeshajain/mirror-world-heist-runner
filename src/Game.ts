@@ -66,6 +66,10 @@ const JETPACK_COIN_SPAWN_JITTER_MS = 70;
 const MYSTERY_BOX_SCORE_TRIGGER = 7000;
 /** If the first mystery box is missed, a second pickup can be scheduled after this score. */
 const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
+/** After the early mystery arc ends, one more box can spawn once score reaches this. */
+const MYSTERY_BOX_LATE_SCORE_TRIGGER = 14000;
+const MYSTERY_BOX_LATE_SPAWN_DELAY_MIN_MS = 2200;
+const MYSTERY_BOX_LATE_SPAWN_DELAY_MAX_MS = 4800;
 const MYSTERY_BOX_PICKUP_Z_OFFSET = 78;
 /** At or above this score with exactly one life left, a one-time extra-life pickup can spawn this run. */
 const EXTRA_LIFE_SCORE_TRIGGER = 10000;
@@ -86,6 +90,9 @@ const MYSTERY_POST_FLIP_IMMUNITY_MS = 2000;
 const MYSTERY_DOOR_SCORE_TRIGGER = 12000;
 const MYSTERY_DOOR_SPAWN_DELAY_MIN_MS = 2800;
 const MYSTERY_DOOR_SPAWN_DELAY_MAX_MS = 5200;
+/** If the first door is missed, respawn after this wall-clock delay (ms). */
+const MYSTERY_DOOR_RETRY_DELAY_MIN_MS = 7000;
+const MYSTERY_DOOR_RETRY_DELAY_MAX_MS = 10000;
 const MYSTERY_DOOR_PICKUP_Z_OFFSET = 88;
 /** Wall-clock duration after entering the door (slow → surge → auto exit). */
 const MYSTERY_DOOR_MODE_DURATION_MS = 10000;
@@ -307,6 +314,10 @@ export class Game {
   /** True once the player collects a box and the upside-down effect starts. */
   private mysteryBoxCollectedThisRun = false;
   private mysteryBoxPickup: MysteryBoxPickup | null = null;
+  /** Wall-clock spawn for the 14k+ encore mystery box (0 = not scheduled). */
+  private mysteryBoxLateSpawnAtMs = 0;
+  /** True after the late 14k mystery box spawned (whether collected or missed). */
+  private mysteryBoxLateWaveDone = false;
   /** Until this time (exclusive), full-screen CSS flip is active. */
   private mysteryScreenFlipUntil = 0;
   /** Obstacle hits ignored for this long after mystery flip begins. */
@@ -324,8 +335,10 @@ export class Game {
 
   /** Once per run: wall-clock when mystery door spawns (0 = not scheduled). */
   private mysteryDoorSpawnAtMs = 0;
-  /** True after the door was missed or the void run finished. */
+  /** True after both door offers were missed or the void run finished. */
   private mysteryDoorWaveComplete = false;
+  /** Door pickups placed this run (1 = first, 2 = retry after miss). */
+  private mysteryDoorPickupSpawnsThisRun = 0;
   private mysteryDoorPickup: MysteryDoorPickup | null = null;
   /** Exclusive end time for void run (performance.now); 0 = inactive. */
   private mysteryDoorModeUntil = 0;
@@ -491,6 +504,7 @@ export class Game {
     if (this.jetpackFlyingUntil > t0) this.jetpackFlyingUntil = bump(this.jetpackFlyingUntil);
     if (this.jetpackNextCoinAtMs > t0) this.jetpackNextCoinAtMs = bump(this.jetpackNextCoinAtMs);
     if (this.mysteryBoxSpawnAtMs > t0) this.mysteryBoxSpawnAtMs = bump(this.mysteryBoxSpawnAtMs);
+    if (this.mysteryBoxLateSpawnAtMs > t0) this.mysteryBoxLateSpawnAtMs = bump(this.mysteryBoxLateSpawnAtMs);
     if (this.mysteryScreenFlipUntil > t0) this.mysteryScreenFlipUntil = bump(this.mysteryScreenFlipUntil);
     if (this.mysteryFlipImmunityUntil > t0) this.mysteryFlipImmunityUntil = bump(this.mysteryFlipImmunityUntil);
     if (this.mysteryPostFlipImmunityUntil > t0) this.mysteryPostFlipImmunityUntil = bump(this.mysteryPostFlipImmunityUntil);
@@ -585,7 +599,11 @@ export class Game {
   getMysteryDoorHudLine(): string {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
-    if (this.mysteryDoorPickup) return "Mystery door ahead — run through it";
+    if (this.mysteryDoorPickup) {
+      return this.mysteryDoorPickupSpawnsThisRun >= 2
+        ? "Mystery door — second chance · run through it"
+        : "Mystery door ahead — run through it";
+    }
     const now = performance.now();
     if (this.isMysteryDoorMode()) {
       const s = Math.max(0, (this.mysteryDoorModeUntil - now) / 1000);
@@ -593,6 +611,17 @@ export class Game {
       return phase === "slow"
         ? `VOID RUN — ${s.toFixed(1)}s left · slow pull`
         : `VOID RUN — ${s.toFixed(1)}s left · SURGE (auto exit)`;
+    }
+    if (
+      !this.mysteryDoorWaveComplete &&
+      this.mysteryDoorSpawnAtMs > 0 &&
+      this.mysteryDoorPickupSpawnsThisRun >= 1
+    ) {
+      if (now < this.mysteryDoorSpawnAtMs) {
+        const s = Math.max(0, (this.mysteryDoorSpawnAtMs - now) / 1000);
+        return `Mystery door again in ${s.toFixed(1)}s`;
+      }
+      return "Mystery door incoming…";
     }
     return "";
   }
@@ -678,6 +707,8 @@ export class Game {
     this.clearFlightCoins();
     this.jetpackNextCoinAtMs = 0;
     this.mysteryBoxSpawnAtMs = 0;
+    this.mysteryBoxLateSpawnAtMs = 0;
+    this.mysteryBoxLateWaveDone = false;
     this.mysteryBoxUsedThisRun = false;
     this.mysteryBoxPickupSpawnsThisRun = 0;
     this.mysteryBoxCollectedThisRun = false;
@@ -697,6 +728,7 @@ export class Game {
     }
     this.mysteryDoorSpawnAtMs = 0;
     this.mysteryDoorWaveComplete = false;
+    this.mysteryDoorPickupSpawnsThisRun = 0;
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
     this.mysteryDoorSpikeFired = false;
@@ -1845,7 +1877,7 @@ export class Game {
     }
   }
 
-  private spawnMysteryBoxPickup(): void {
+  private spawnMysteryBoxPickup(fromLate14k = false): void {
     /** After the first random spawn, place the box in the lane the player is steering toward so it stays in their path. */
     const laneTowardPlayer = this.mysteryBoxPickupSpawnsThisRun >= 1;
     const laneIdx = laneTowardPlayer
@@ -1896,13 +1928,15 @@ export class Game {
     this.mysteryBoxPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
     this.mysteryBoxPickupSpawnsThisRun += 1;
     const n = this.mysteryBoxPickupSpawnsThisRun;
-    const msg =
-      n >= 3
+    const msg = fromLate14k
+      ? "MYSTERY BOX — 14k+ encore · drive through if you dare"
+      : n >= 3
         ? "MYSTERY BOX — in your lane · last chance"
         : n >= 2
           ? "MYSTERY BOX — second chance · in your lane"
           : "MYSTERY BOX — drive through it if you dare";
-    this.announce(msg, n >= 2 ? 2800 : 2600);
+    this.announce(msg, fromLate14k || n >= 2 ? 3000 : 2600);
+    if (fromLate14k) this.mysteryBoxLateWaveDone = true;
   }
 
   private checkMysteryBoxPickup(): void {
@@ -1994,7 +2028,12 @@ export class Game {
     g.userData.phase = Math.random() * Math.PI * 2;
     this.worldGroup.add(g);
     this.mysteryDoorPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
-    this.announce("MYSTERY DOOR — run through the neon gate", 3000);
+    this.mysteryDoorPickupSpawnsThisRun += 1;
+    const n = this.mysteryDoorPickupSpawnsThisRun;
+    this.announce(
+      n >= 2 ? "MYSTERY DOOR — second chance · run through" : "MYSTERY DOOR — run through the neon gate",
+      n >= 2 ? 3200 : 3000,
+    );
   }
 
   private checkMysteryDoorPickup(): void {
@@ -2026,7 +2065,12 @@ export class Game {
     if (wz > DESPAWN_BEHIND + 12) {
       this.worldGroup.remove(this.mysteryDoorPickup.mesh);
       this.mysteryDoorPickup = null;
-      this.mysteryDoorWaveComplete = true;
+      if (this.mysteryDoorPickupSpawnsThisRun < 2) {
+        this.mysteryDoorSpawnAtMs = now + randRange(MYSTERY_DOOR_RETRY_DELAY_MIN_MS, MYSTERY_DOOR_RETRY_DELAY_MAX_MS);
+        this.announce("MYSTERY DOOR MISSED · another portal in 7–10s", 2800);
+      } else {
+        this.mysteryDoorWaveComplete = true;
+      }
     }
   }
 
@@ -2695,13 +2739,32 @@ export class Game {
         }
       }
       if (
+        !this.mysteryBoxLateWaveDone &&
+        this.mysteryBoxLateSpawnAtMs === 0 &&
+        !this.mysteryBoxPickup &&
+        !this.isJetpackFlying() &&
+        this.score >= MYSTERY_BOX_LATE_SCORE_TRIGGER &&
+        this.mysteryBoxUsedThisRun
+      ) {
+        this.mysteryBoxLateSpawnAtMs =
+          nowTick + randRange(MYSTERY_BOX_LATE_SPAWN_DELAY_MIN_MS, MYSTERY_BOX_LATE_SPAWN_DELAY_MAX_MS);
+      }
+      if (
         !this.mysteryBoxUsedThisRun &&
         this.mysteryBoxSpawnAtMs > 0 &&
         nowTick >= this.mysteryBoxSpawnAtMs &&
         !this.mysteryBoxPickup &&
         !this.isJetpackFlying()
       ) {
-        this.spawnMysteryBoxPickup();
+        this.spawnMysteryBoxPickup(false);
+      }
+      if (this.mysteryBoxLateSpawnAtMs > 0 && nowTick >= this.mysteryBoxLateSpawnAtMs && !this.mysteryBoxPickup) {
+        if (this.isJetpackFlying()) {
+          this.mysteryBoxLateSpawnAtMs = nowTick + 400;
+        } else {
+          this.mysteryBoxLateSpawnAtMs = 0;
+          this.spawnMysteryBoxPickup(true);
+        }
       }
       if (
         !this.jetpackUsedThisRun &&
@@ -2843,6 +2906,8 @@ export class Game {
     }
     this.clearFlightCoins();
     this.mysteryBoxSpawnAtMs = 0;
+    this.mysteryBoxLateSpawnAtMs = 0;
+    this.mysteryBoxLateWaveDone = false;
     if (this.mysteryBoxPickup) {
       this.worldGroup.remove(this.mysteryBoxPickup.mesh);
       this.mysteryBoxPickup = null;
@@ -2854,6 +2919,7 @@ export class Game {
     }
     this.mysteryDoorSpawnAtMs = 0;
     this.mysteryDoorWaveComplete = false;
+    this.mysteryDoorPickupSpawnsThisRun = 0;
     this.mysteryDoorModeUntil = 0;
     this.mysteryDoorModeStartMs = 0;
     this.mysteryDoorSpikeFired = false;
