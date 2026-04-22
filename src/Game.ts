@@ -37,6 +37,8 @@ const STARTING_LIVES = 3;
 const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
 /** Non-fatal hit: freeze sim + input while the mirror-shatter beat plays (ms). */
 const LIFE_LOST_FREEZE_MS = 1000;
+/** After unfreezing from a life loss, obstacle hits do not cost lives (ms wall clock). */
+const LIFE_LOST_HIT_IMMUNITY_MS = 2000;
 
 const JETPACK_SCORE_TRIGGER = 4000;
 /** If the first jetpack pickup is missed, a second pickup can be scheduled after this score. */
@@ -47,9 +49,9 @@ const PICKUP_SPAWN_DELAY_MAX_MS = 3200;
 const JETPACK_FLY_DURATION_MS = 5000;
 const JETPACK_LAND_IMMUNITY_MS = 2000;
 const JETPACK_FLY_HEIGHT = 3.35;
-const JETPACK_PICKUP_Z_OFFSET = 48;
+const JETPACK_PICKUP_Z_OFFSET = 66;
 /** Spawn this many seconds of travel farther ahead so the pickup is visible earlier for lane changes. */
-const JETPACK_PICKUP_LEAD_TIME_S = 1;
+const JETPACK_PICKUP_LEAD_TIME_S = 1.4;
 const COIN_SCORE_BONUS = 100;
 /** Jetpack flight only: base interval between coin spawns (ms). */
 const JETPACK_COIN_SPAWN_INTERVAL_MS = 150;
@@ -59,10 +61,16 @@ const JETPACK_COIN_SPAWN_JITTER_MS = 70;
 const MYSTERY_BOX_SCORE_TRIGGER = 7000;
 /** If the first mystery box is missed, a second pickup can be scheduled after this score. */
 const MYSTERY_BOX_RETRY_SCORE_TRIGGER = 8000;
-const MYSTERY_BOX_PICKUP_Z_OFFSET = 58;
+const MYSTERY_BOX_PICKUP_Z_OFFSET = 78;
 /** At or above this score with exactly one life left, a one-time extra-life pickup can spawn this run. */
 const EXTRA_LIFE_SCORE_TRIGGER = 10000;
-const EXTRA_LIFE_PICKUP_Z_OFFSET = 54;
+const EXTRA_LIFE_PICKUP_Z_OFFSET = 76;
+/** Min |Δz| to nearest obstacle in-lane before we nudge pickup further ahead (worldGroup local Z). */
+const PICKUP_MIN_Z_CLEARANCE = 13;
+/** If no lane clears `PICKUP_MIN_Z_CLEARANCE`, shift spawn this much further ahead (more negative Z). */
+const PICKUP_Z_NUDGE = 9;
+/** HUD countdown starts this many ms before the extra-life pickup is scheduled to spawn. */
+const EXTRA_LIFE_PRESPAWN_WARN_MS = 2000;
 /** Collecting the box flips the entire view for this long (game keeps running). */
 const MYSTERY_FLIP_DURATION_MS = 10000;
 /** Obstacle immunity: first window right as upside-down starts; second right after view resets. */
@@ -241,6 +249,8 @@ export class Game {
   private lifeLostBannerUntil = 0;
   /** Until this time (exclusive), world sim and input are paused after losing a life. */
   private lifeLostFreezeUntil = 0;
+  /** After a non-fatal life loss, until this time obstacle hits are ignored (starts after freeze). */
+  private lifeLostHitImmunityUntil = 0;
   /** `performance.now()` until which obstacle hits do not cost lives (Mirror protocol grace). */
   private mirrorProtocolImmunityUntil = 0;
   /** After jetpack flight ends, brief obstacle immunity (ms wall clock). */
@@ -430,6 +440,7 @@ export class Game {
     if (this.mirrorWarningStartAt > t0) this.mirrorWarningStartAt = bump(this.mirrorWarningStartAt);
     if (this.mirrorAnnounceUntil > t0) this.mirrorAnnounceUntil = bump(this.mirrorAnnounceUntil);
     if (this.lifeLostFreezeUntil > t0) this.lifeLostFreezeUntil = bump(this.lifeLostFreezeUntil);
+    if (this.lifeLostHitImmunityUntil > t0) this.lifeLostHitImmunityUntil = bump(this.lifeLostHitImmunityUntil);
     if (this.lifeLostBannerUntil > t0) this.lifeLostBannerUntil = bump(this.lifeLostBannerUntil);
     if (this.mirrorProtocolImmunityUntil > t0) this.mirrorProtocolImmunityUntil = bump(this.mirrorProtocolImmunityUntil);
     if (this.jetpackPostImmunityUntil > t0) this.jetpackPostImmunityUntil = bump(this.jetpackPostImmunityUntil);
@@ -511,7 +522,16 @@ export class Game {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
     if (this.extraLifePickup) return "Extra life ahead — stay in your lane";
-    return "";
+    if (this.extraLifePickupUsedThisRun || this.extraLifeSpawnAtMs === 0) return "";
+    const now = performance.now();
+    const tSpawn = this.extraLifeSpawnAtMs;
+    const warnStart = tSpawn - EXTRA_LIFE_PRESPAWN_WARN_MS;
+    if (now < warnStart) return "";
+    if (now < tSpawn) {
+      const s = Math.max(0, (tSpawn - now) / 1000);
+      return `Extra life in ${s.toFixed(1)}s — stay ready`;
+    }
+    return "Extra life incoming…";
   }
 
   private isJetpackFlying(): boolean {
@@ -570,6 +590,7 @@ export class Game {
     this.lives = STARTING_LIVES;
     this.lifeLostBannerUntil = 0;
     this.lifeLostFreezeUntil = 0;
+    this.lifeLostHitImmunityUntil = 0;
     this.mirrorProtocolImmunityUntil = 0;
     this.jetpackPostImmunityUntil = 0;
     this.jetpackSpawnAtMs = 0;
@@ -1434,6 +1455,48 @@ export class Game {
     if (idx !== -1) this.laneFairnessBag.splice(idx, 1);
   }
 
+  /** Smallest |obstacle.z − pickupZ| in the same lane (large = open stretch at that Z). */
+  private minObstacleZGapForLane(lane: (typeof LANES)[number], pickupZ: number): number {
+    let minAbs = 1e9;
+    for (const o of this.obstacles) {
+      if (o.lane !== lane) continue;
+      const dz = Math.abs(o.z - pickupZ);
+      if (dz < minAbs) minAbs = dz;
+    }
+    return minAbs > 1e8 ? 999 : minAbs;
+  }
+
+  /**
+   * Picks the clearest lane at `pickupZ` (tie → preferred index). If every lane is tight on Z,
+   * nudges the spawn farther ahead and retries so pickups are not parked behind obstacles.
+   */
+  private resolvePickupLaneAndZ(
+    preferredLaneIdx: 0 | 1 | 2,
+    pickupZ: number,
+  ): { lane: (typeof LANES)[number]; z: number } {
+    let z = pickupZ;
+    for (let nudge = 0; nudge < 4; nudge++) {
+      let bestIdx: 0 | 1 | 2 = preferredLaneIdx;
+      let bestScore = -1;
+      for (let idx = 0; idx < 3; idx++) {
+        const lane = LANES[idx]!;
+        const gap = this.minObstacleZGapForLane(lane, z);
+        const bias = idx === preferredLaneIdx ? 0.25 : 0;
+        const score = gap + bias;
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = idx as 0 | 1 | 2;
+        }
+      }
+      const clearest = this.minObstacleZGapForLane(LANES[bestIdx]!, z);
+      if (clearest >= PICKUP_MIN_Z_CLEARANCE || nudge === 3) {
+        return { lane: LANES[bestIdx]!, z };
+      }
+      z -= PICKUP_Z_NUDGE;
+    }
+    return { lane: LANES[preferredLaneIdx]!, z: pickupZ };
+  }
+
   private spawnObstacle(): void {
     const z = -SPAWN_AHEAD - this.distance;
     const dNew = this.distance;
@@ -1632,12 +1695,17 @@ export class Game {
   }
 
   private spawnJetpackPickup(): void {
-    const lane = LANES[Math.floor(Math.random() * 3)]!;
     const v = THREE.MathUtils.clamp(this.velocityZ, 16, 52);
     const leadZ = JETPACK_PICKUP_Z_OFFSET + v * JETPACK_PICKUP_LEAD_TIME_S;
-    const z = -leadZ - this.distance;
+    const pickupZ = -leadZ - this.distance;
+    const prefIdx =
+      this.jetpackPickupSpawnsThisRun >= 1
+        ? (THREE.MathUtils.clamp(this.targetLane, 0, 2) as 0 | 1 | 2)
+        : (Math.floor(Math.random() * 3) as 0 | 1 | 2);
+    const { lane, z } = this.resolvePickupLaneAndZ(prefIdx, pickupZ);
     const g = this.buildCartoonJetpackPickupMesh();
-    const bobBaseY = 1.02;
+    g.scale.setScalar(1.42);
+    const bobBaseY = 1.34;
     g.position.set(lane * LANE_WIDTH, bobBaseY, z);
 
     g.userData.jetpackPickup = true;
@@ -1661,8 +1729,8 @@ export class Game {
     this.jetpackPickup.mesh.getWorldPosition(this.owp);
     const oz = this.owp.z;
     const ox = this.owp.x;
-    if (Math.abs(oz - PLAYER_Z) > 1.45) return;
-    if (Math.abs(ox - this.player.position.x) > 1.25) return;
+    if (Math.abs(oz - PLAYER_Z) > 1.55) return;
+    if (Math.abs(ox - this.player.position.x) > 1.42) return;
     this.worldGroup.remove(this.jetpackPickup.mesh);
     this.jetpackPickup = null;
     this.jetpackEnteredFlightThisRun = true;
@@ -1691,17 +1759,18 @@ export class Game {
     const laneIdx = laneTowardPlayer
       ? (THREE.MathUtils.clamp(this.targetLane, 0, 2) as 0 | 1 | 2)
       : ((Math.floor(Math.random() * 3) as 0 | 1 | 2));
-    const lane = LANES[laneIdx]!;
-    const z = -MYSTERY_BOX_PICKUP_Z_OFFSET - this.distance;
+    const pickupZ = -MYSTERY_BOX_PICKUP_Z_OFFSET - this.distance;
+    const { lane, z } = this.resolvePickupLaneAndZ(laneIdx, pickupZ);
     const g = new THREE.Group();
-    const bobY = 0.98;
+    g.scale.setScalar(1.22);
+    const bobY = 1.24;
     g.position.set(lane * LANE_WIDTH, bobY, z);
 
     const qTex = createMysteryQuestionTexture();
     const sideMat = new THREE.MeshStandardMaterial({
       color: 0x3d1a6e,
       emissive: 0x220844,
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.52,
       metalness: 0.55,
       roughness: 0.38,
     });
@@ -1711,7 +1780,7 @@ export class Game {
       metalness: 0.25,
       roughness: 0.35,
       emissive: 0xaa66ff,
-      emissiveIntensity: 0.12,
+      emissiveIntensity: 0.26,
       emissiveMap: qTex,
     });
     const mats: THREE.MeshStandardMaterial[] = [
@@ -1722,7 +1791,7 @@ export class Game {
       faceMat,
       sideMat,
     ];
-    const box = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.88, 0.88), mats);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.02, 1.02, 1.02), mats);
     box.castShadow = true;
     g.add(box);
 
@@ -1751,9 +1820,9 @@ export class Game {
     this.mysteryBoxPickup.mesh.getWorldPosition(this.owp);
     const oz = this.owp.z;
     const ox = this.owp.x;
-    if (Math.abs(oz - PLAYER_Z) > 1.45) return;
-    if (Math.abs(ox - this.player.position.x) > 1.28) return;
-    if (this.playerY > 1.45) return;
+    if (Math.abs(oz - PLAYER_Z) > 1.55) return;
+    if (Math.abs(ox - this.player.position.x) > 1.42) return;
+    if (this.playerY > 1.68) return;
     this.worldGroup.remove(this.mysteryBoxPickup.mesh);
     this.mysteryBoxPickup = null;
     const now = performance.now();
@@ -1789,39 +1858,40 @@ export class Game {
       return;
     }
     const laneIdx = THREE.MathUtils.clamp(this.targetLane, 0, 2) as 0 | 1 | 2;
-    const lane = LANES[laneIdx]!;
-    const z = -EXTRA_LIFE_PICKUP_Z_OFFSET - this.distance;
+    const pickupZ = -EXTRA_LIFE_PICKUP_Z_OFFSET - this.distance;
+    const { lane, z } = this.resolvePickupLaneAndZ(laneIdx, pickupZ);
     const g = new THREE.Group();
-    const bobY = 1.05;
+    g.scale.setScalar(1.45);
+    const bobY = 1.32;
     g.position.set(lane * LANE_WIDTH, bobY, z);
 
     const heartMat = new THREE.MeshPhysicalMaterial({
       color: 0xff3355,
       emissive: 0xff0022,
-      emissiveIntensity: 0.55,
+      emissiveIntensity: 0.72,
       metalness: 0.35,
       roughness: 0.22,
       clearcoat: 0.85,
       clearcoatRoughness: 0.12,
     });
-    const lobe = new THREE.Mesh(new THREE.SphereGeometry(0.1, 14, 12), heartMat);
-    lobe.position.set(-0.08, 0.1, 0);
+    const lobe = new THREE.Mesh(new THREE.SphereGeometry(0.12, 16, 14), heartMat);
+    lobe.position.set(-0.09, 0.11, 0);
     const lobeR = lobe.clone();
-    lobeR.position.x = 0.08;
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.095, 0.16, 12), heartMat);
+    lobeR.position.x = 0.09;
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.18, 12), heartMat);
     tip.rotation.z = Math.PI;
-    tip.position.set(0, -0.05, 0);
+    tip.position.set(0, -0.055, 0);
     g.add(lobe, lobeR, tip);
 
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0xffccd0,
       transparent: true,
-      opacity: 0.35,
+      opacity: 0.42,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.02, 8, 40), ringMat);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.028, 10, 44), ringMat);
     ring.rotation.x = Math.PI / 2;
     ring.position.y = -0.02;
     g.add(ring);
@@ -1841,8 +1911,8 @@ export class Game {
     this.extraLifePickup.mesh.getWorldPosition(this.owp);
     const oz = this.owp.z;
     const ox = this.owp.x;
-    if (Math.abs(oz - PLAYER_Z) > 1.45) return;
-    if (Math.abs(ox - this.player.position.x) > 1.25) return;
+    if (Math.abs(oz - PLAYER_Z) > 1.55) return;
+    if (Math.abs(ox - this.player.position.x) > 1.42) return;
     this.worldGroup.remove(this.extraLifePickup.mesh);
     this.extraLifePickup = null;
     this.extraLifePickupUsedThisRun = true;
@@ -2170,7 +2240,8 @@ export class Game {
       nowHit < this.mirrorProtocolImmunityUntil ||
       nowHit < this.jetpackPostImmunityUntil ||
       nowHit < this.mysteryFlipImmunityUntil ||
-      nowHit < this.mysteryPostFlipImmunityUntil
+      nowHit < this.mysteryPostFlipImmunityUntil ||
+      nowHit < this.lifeLostHitImmunityUntil
     ) {
       return;
     }
@@ -2178,6 +2249,7 @@ export class Game {
     this.stumble();
     if (this.lives > 0) {
       this.scheduleLifeLostRecoverBeat();
+      this.lifeLostHitImmunityUntil = this.lifeLostFreezeUntil + LIFE_LOST_HIT_IMMUNITY_MS;
     }
     if (this.lives <= 0) {
       this.endGame(
@@ -2500,6 +2572,7 @@ export class Game {
     this.nearMissFlashUntil = 0;
     this.lifeLostBannerUntil = 0;
     this.lifeLostFreezeUntil = 0;
+    this.lifeLostHitImmunityUntil = 0;
     this.mirrorProtocolImmunityUntil = 0;
     this.mirrorCamRoll = 0;
     this.mirrorLayer = false;

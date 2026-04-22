@@ -1,4 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+/** Baked into the JS bundle — works on GitHub Pages without fetching a separate JSON file. Keep in sync with `public/supabase-config.json`. */
+import runtimeDefaults from "./supabase-runtime.json";
 
 function credentialsFromEnv(): { url: string; anonKey: string } | null {
   const url = (import.meta.env.VITE_SUPABASE_URL as string | undefined)?.trim();
@@ -12,22 +14,22 @@ function credentialsFromEnv(): { url: string; anonKey: string } | null {
   return null;
 }
 
-type RuntimeJson = { url?: string; anonKey?: string };
-
-function normalizePublicBase(): string {
-  const raw = import.meta.env.BASE || "/";
-  if (raw === "/" || raw === "") return "/";
-  return raw.endsWith("/") ? raw : `${raw}/`;
+function credentialsFromRecord(r: { url?: string; anonKey?: string }): { url: string; anonKey: string } | null {
+  const url = r.url?.trim();
+  const anonKey = r.anonKey?.trim();
+  if (url && anonKey && url.startsWith("http") && anonKey.length >= 12) {
+    return { url, anonKey };
+  }
+  return null;
 }
 
 let cachedClient: SupabaseClient | null = null;
 let inflight: Promise<SupabaseClient | null> | null = null;
 
 /**
- * Resolves a Supabase client from, in order:
- * 1. `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` (or `VITE_SUPABASE_PUBLISHABLE_KEY`) at build time, or
- * 2. `public/supabase-config.json` at runtime (copied next to `index.html` in `dist/`) — use for `vite preview`
- *    or static hosting when env vars were not available during `vite build`.
+ * Resolves a Supabase client from:
+ * 1. `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` (or `VITE_SUPABASE_PUBLISHABLE_KEY`) when set at build time, else
+ * 2. Defaults from `src/supabase-runtime.json` (bundled — reliable on static hosts).
  */
 export async function resolveSupabaseClient(): Promise<SupabaseClient | null> {
   if (cachedClient) return cachedClient;
@@ -40,48 +42,12 @@ export async function resolveSupabaseClient(): Promise<SupabaseClient | null> {
         return cachedClient;
       }
 
-      try {
-        const base = normalizePublicBase();
-        const candidateUrls = [
-          new URL("supabase-config.json", location.href).href,
-          `${location.origin}${base}supabase-config.json`,
-        ];
-        const tried = new Set<string>();
-        let res: Response | null = null;
-        for (const u of candidateUrls) {
-          if (tried.has(u)) continue;
-          tried.add(u);
-          const r = await fetch(u, { cache: "no-store" });
-          if (r.ok) {
-            res = r;
-            break;
-          }
-        }
-        if (!res?.ok) {
-          if (import.meta.env.DEV) {
-            console.info(
-              "[leaderboard] No valid VITE_SUPABASE_* env; supabase-config.json not found (tried",
-              [...tried].join(", "),
-              ").",
-            );
-          }
-          return null;
-        }
-        const j = (await res.json()) as RuntimeJson;
-        const url = j.url?.trim();
-        const anonKey = j.anonKey?.trim();
-        if (url && anonKey && url.startsWith("http") && anonKey.length >= 12) {
-          cachedClient = createClient(url, anonKey);
-          return cachedClient;
-        }
-        if (import.meta.env.DEV) {
-          console.info("[leaderboard] public/supabase-config.json needs non-empty url and anonKey.");
-        }
-      } catch {
-        if (import.meta.env.DEV) {
-          console.info("[leaderboard] Could not fetch public/supabase-config.json.");
-        }
+      const bundled = credentialsFromRecord(runtimeDefaults as { url?: string; anonKey?: string });
+      if (bundled) {
+        cachedClient = createClient(bundled.url, bundled.anonKey);
+        return cachedClient;
       }
+
       return null;
     } finally {
       inflight = null;
