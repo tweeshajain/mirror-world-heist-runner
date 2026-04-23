@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0a0514" />
+    <title>Mirror World Heist Runner</title>
+    <script type="module" crossorigin src="/mirror-world-heist-runner/assets/index-CHcpG8QM.js"></script>
+    <link rel="stylesheet" crossorigin href="/mirror-world-heist-runner/assets/index-8PAVkB98.css">
+  </head>
+  <body>
+    <div id="ui">
+      <div id="hud">
+        <div id="score-row">
+          <span id="score">0</span>
+          <span id="lives" class="lives-hud" aria-label="Lives remaining">♥ ♥ ♥</span>
+          <span id="layer-badge" class="layer-real">REAL</span>
+          <div id="pause-row" class="pause-row" hidden>
+            <button id="btn-pause" type="button" class="hud-btn">Pause</button>
+            <button id="btn-resume" type="button" class="hud-btn" hidden>Resume</button>
+          </div>
+        </div>
+        <div id="mirror-warn-bar" aria-hidden="true"></div>
+        <div id="jetpack-hud" class="powerup-hud powerup-hud--jetpack" hidden role="status" aria-live="polite"></div>
+        <div id="mystery-box-hud" class="powerup-hud powerup-hud--mystery" hidden role="status" aria-live="polite"></div>
+        <div id="extra-life-hud" class="powerup-hud powerup-hud--life" hidden role="status" aria-live="polite"></div>
+        <div id="mystery-door-hud" class="powerup-hud powerup-hud--door" hidden role="status" aria-live="polite"></div>
+        <div id="float-realm-hud" class="powerup-hud powerup-hud--float" hidden role="status" aria-live="polite"></div>
+        <div id="bottle-boost-hud" class="powerup-hud powerup-hud--bottle" hidden role="status" aria-live="polite"></div>
+        <div id="mystery-flip-hud" class="mystery-flip-hud" hidden role="status" aria-live="assertive"></div>
+        <div id="mirror-hint" aria-live="polite"></div>
+        <p id="quick-tip">
+          <strong>3 lives</strong> — each hit costs one (big warning on screen) · <strong>←→↑↓</strong> or WASD ·
+          <strong>Mirror</strong> flips controls every 15s (watch the 1s cue).
+          <strong>Pause</strong> / <strong>Resume</strong> in the top bar when you need a break.
+          Banked <strong>bottle</strong>: tap the icon or press <kbd>Enter</kbd>.
+        </p>
+      </div>
+      <div id="start-screen">
+        <h1>Mirror World Heist Runner</h1>
+        <p class="tagline">
+          <strong>3 lives:</strong> each obstacle you fail to dodge costs one. You run three lanes, jump or slide hazards,
+          and survive while <strong>Mirror Reality</strong> flips controls — telegraphed 1s before it hits.
+          The longer you last, the faster the run gets — stay sharp, read the road, and chase a high score.
+        </p>
+        <ul class="controls">
+          <li><kbd>A</kbd> / <kbd>D</kbd> or <kbd>←</kbd> / <kbd>→</kbd> — lanes (tap each lane change)</li>
+          <li><kbd>W</kbd> / <kbd>Space</kbd> / <kbd>↑</kbd> — jump · <kbd>S</kbd> / <kbd>↓</kbd> — slide</li>
+          <li><kbd>Enter</kbd> — use a banked boost bottle (after you pick one up)</li>
+          <li>Mobile: swipe <strong>up</strong> jump · <strong>down</strong> slide ·
+            <strong>left/right</strong> lanes</li>
+        </ul>
+        <div class="player-name-row">
+          <label for="player-name">Leaderboard name</label>
+          <input
+            id="player-name"
+            type="text"
+            maxlength="24"
+            autocomplete="nickname"
+            placeholder="Runner"
+            aria-describedby="player-name-hint"
+          />
+          <p id="player-name-hint" class="player-name-hint">Shown with your score (max 24 characters).</p>
+        </div>
+        <button id="btn-start" type="button">Run</button>
+      </div>
+      <div id="gameover" hidden>
+        <h2>Run ended</h2>
+        <p id="go-reason"></p>
+        <p class="final">Score: <span id="final-score">0</span></p>
+        <div id="leaderboard-panel" class="leaderboard-panel">
+          <p id="leaderboard-status" class="leaderboard-status"></p>
+          <p id="leaderboard-setup-hint" class="leaderboard-setup-hint" hidden></p>
+          <p id="your-rank" class="your-rank" hidden></p>
+          <p id="top5-heading" class="top5-heading" hidden>Global top 5</p>
+          <ol id="top5-list" class="top5-list" hidden></ol>
+          <p id="leaderboard-err" class="leaderboard-err" hidden></p>
+        </div>
+        <button id="btn-retry" type="button">Retry</button>
+      </div>
+    </div>
+    <div id="life-lost-banner" class="life-lost-banner" hidden role="status" aria-live="assertive"></div>
+    <div id="shatter-overlay" class="shatter-overlay" hidden aria-hidden="true"></div>
+    <div
+      id="system-error-overlay"
+      class="system-error-overlay"
+      hidden
+      aria-live="assertive"
+      aria-atomic="true"
+    >
+      <div class="syserr-scan"></div>
+      <div class="syserr-panel">
+        <div class="syserr-rail">HEIST_OS · CONTROL_PLANE · <span id="syserr-hex">0xM1RR</span></div>
+        <div class="syserr-title">
+          <span class="syserr-warn">SYSTEM</span> <span class="syserr-err">ERROR</span>
+        </div>
+        <p class="syserr-detail" id="syserr-detail">CONTROL BUS SIGNATURE DRIFT</p>
+        <p class="syserr-count" id="syserr-count">PROTOCOL LOCK IN — 1.0s</p>
+        <p class="syserr-foot" id="syserr-foot">DO NOT TRUST MUSCLE MEMORY · AWAIT REM</p>
+      </div>
+    </div>
+    <div id="c-wrap" aria-hidden="true" tabindex="-1">
+      <canvas id="c"></canvas>
+    </div>
+    <button type="button" id="btn-bottle-boost" class="btn-bottle-boost" hidden>
+      <span class="btn-bottle-boost__icon" aria-hidden="true">
+        <svg class="btn-bottle-boost__svg" viewBox="0 0 72 92" width="54" height="69" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <clipPath id="bb-liquid-clip">
+              <path
+                d="M 28 16 L 44 16 L 46 20 L 46 32 C 46 40 56 48 58 58 A 22 22 0 0 1 14 58 C 16 48 26 40 26 32 L 26 20 L 28 16 Z"
+              />
+            </clipPath>
+            <linearGradient id="bb-blue" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#5cf0ff" />
+              <stop offset="55%" stop-color="#38c4ff" />
+              <stop offset="100%" stop-color="#1490dc" />
+            </linearGradient>
+            <linearGradient id="bb-pink" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#ff5bd4" />
+              <stop offset="50%" stop-color="#ff2eb8" />
+              <stop offset="100%" stop-color="#c0107a" />
+            </linearGradient>
+          </defs>
+          <!-- Cork (above rim) -->
+          <path
+            d="M 29 5 L 43 5 L 44.5 14 L 27.5 14 Z"
+            fill="#9d6438"
+            stroke="#0a0a0a"
+            stroke-width="2.1"
+            stroke-linejoin="round"
+          />
+          <circle cx="33.5" cy="8.5" r="1" fill="#2a1810" />
+          <circle cx="38.5" cy="9.5" r="0.9" fill="#2a1810" />
+          <circle cx="35.5" cy="11.5" r="0.75" fill="#2a1810" />
+          <!-- Liquids -->
+          <g clip-path="url(#bb-liquid-clip)">
+            <path
+              d="M 12 90 L 60 90 L 60 56 C 52 48 46 56 36 52 C 26 48 20 48 12 56 Z"
+              fill="url(#bb-pink)"
+            />
+            <path
+              d="M 12 56 C 20 48 26 48 36 52 C 46 56 52 48 60 56 L 60 18 L 12 18 Z"
+              fill="url(#bb-blue)"
+            />
+            <ellipse cx="22" cy="64" rx="6" ry="12" fill="rgba(255,255,255,0.5)" transform="rotate(-28 22 64)" />
+            <ellipse cx="24" cy="30" rx="4" ry="6.5" fill="rgba(255,255,255,0.42)" transform="rotate(-22 24 30)" />
+          </g>
+          <!-- Thick bottle outline -->
+          <path
+            d="M 28 16 L 44 16 L 46 20 L 46 32 C 46 40 56 48 58 58 A 22 22 0 0 1 14 58 C 16 48 26 40 26 32 L 26 20 L 28 16 Z"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="2.85"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M 27.5 14 L 29 5 L 43 5 L 44.5 14"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="2.85"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </span>
+      <span id="bottle-boost-inv-count" class="btn-bottle-boost__count">0</span>
+    </button>
+  </body>
+</html>
