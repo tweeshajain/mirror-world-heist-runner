@@ -143,8 +143,6 @@ const BOTTLE_BOOST_SPAWN_DELAY_MIN_MS = 2200;
 const BOTTLE_BOOST_SPAWN_DELAY_MAX_MS = 4200;
 const BOTTLE_BOOST_DURATION_MS = 4000;
 const BOTTLE_BOOST_PICKUP_Z_OFFSET = 58;
-const BOTTLE_BOOST_MISS_RETRY_MIN_MS = 3800;
-const BOTTLE_BOOST_MISS_RETRY_MAX_MS = 6200;
 /** Obstacle immunity after a manual boost ends (ms). */
 const BOTTLE_BOOST_POST_USE_IMMUNITY_MS = 2000;
 /** Extra target speed and cap while the boost is active. */
@@ -434,7 +432,10 @@ export class Game {
   private floatRealmPostImmunityUntil = 0;
   private floatRealmEntryImmunityUntil = 0;
 
-  /** True once that gate’s track bottle was banked into inventory (max two per run). */
+  /**
+   * Per gate: true after that gate’s track bottle is done — either banked (picked up) or forfeited (missed).
+   * At most two track spawns per run (no miss retries).
+   */
   private bottleBoostGateBanked: [boolean, boolean] = [false, false];
   /** Banked charges from track pickups; spent by `activateBottleBoost()`. */
   private bottleBoostInventory = 0;
@@ -2252,8 +2253,9 @@ export class Game {
       const missedGate = this.bottleBoostPickup.gateIndex;
       this.worldGroup.remove(this.bottleBoostPickup.mesh);
       this.bottleBoostPickup = null;
-      this.bottleBoostScheduledGate = missedGate;
-      this.bottleBoostSpawnAtMs = now + randRange(BOTTLE_BOOST_MISS_RETRY_MIN_MS, BOTTLE_BOOST_MISS_RETRY_MAX_MS);
+      this.bottleBoostGateBanked[missedGate] = true;
+      this.bottleBoostScheduledGate = null;
+      this.bottleBoostSpawnAtMs = 0;
     }
   }
 
