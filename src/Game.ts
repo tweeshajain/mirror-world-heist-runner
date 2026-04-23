@@ -32,6 +32,8 @@ const MAX_SPEED_MILESTONES = 14;
 /** Mirror Reality System: fixed cadence + telegraph (see `MIRROR_*`). */
 const MIRROR_CYCLE_MS = 15000;
 const MIRROR_WARN_MS = 1000;
+/** At or above this floor score, each mirror telegraph (“SYSTEM ERROR”) swaps vertical ↔ horizontal inputs. */
+const MIRROR_SYSERR_AXIS_SWAP_SCORE = 10000;
 const STARTING_LIVES = 3;
 /** After Mirror Reality fires (system error banner ends), obstacle hits do not cost lives (ms). */
 const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
@@ -452,7 +454,17 @@ export class Game {
         if (this.isLifeLostFrozen() || this.userPaused) return;
         const min = 28;
         if (dt > 600) return;
-        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > min) {
+        const nowT = performance.now();
+        const axisSwap = this.isMirrorSysErrAxisSwapActive(nowT);
+        if (axisSwap) {
+          if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > min) {
+            if (dy < 0) this.queueLane(-1);
+            else this.queueLane(1);
+          } else if (Math.abs(dx) > min) {
+            if (dx < 0) this.tryJump();
+            else this.trySlide();
+          }
+        } else if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > min) {
           if (dx < 0) this.queueLane(-1);
           else this.queueLane(1);
         } else if (Math.abs(dy) > min) {
@@ -562,7 +574,8 @@ export class Game {
     const w = this.getMirrorWarningProgress();
     if (w > 0 && this.mirrorNextFireAt > 0) {
       const sec = Math.max(0, (this.mirrorNextFireAt - now) / 1000);
-      return `MIRROR REALITY — ${sec.toFixed(1)}s`;
+      const axis = this.isMirrorSysErrAxisSwapActive(now) ? " · ↑↓ lanes · ←→ jump/slide" : "";
+      return `MIRROR REALITY — ${sec.toFixed(1)}s${axis}`;
     }
     if (now < this.mirrorAnnounceUntil) return this.lastMirrorMessage;
     return "";
@@ -801,6 +814,11 @@ export class Game {
     if (!this.running || this.gameOver || this.userPaused) return false;
     if (this.mirrorNextFireAt <= 0) return false;
     return now >= this.mirrorWarningStartAt && now < this.mirrorNextFireAt;
+  }
+
+  /** High-score twist: during the system-error banner, ↑/↓ act like ←/→ (lanes) and ←/→ act like jump/slide. */
+  private isMirrorSysErrAxisSwapActive(now: number): boolean {
+    return Math.floor(this.score) >= MIRROR_SYSERR_AXIS_SWAP_SCORE && this.isMirrorSystemErrorTelegraphImmuneAt(now);
   }
 
   /** 0–1: mirror flip glitch transition (decaying). */
@@ -2626,10 +2644,19 @@ export class Game {
 
     if (!(left || right || up || down || a || d || w || s || space)) return;
     e.preventDefault();
-    if (left || a) this.queueLane(-1);
-    else if (right || d) this.queueLane(1);
-    else if (up || w || space) this.tryJump();
-    else if (down || s) this.trySlide();
+    const axisSwap = this.isMirrorSysErrAxisSwapActive(performance.now());
+    if (axisSwap) {
+      if (up || w) this.queueLane(-1);
+      else if (down || s) this.queueLane(1);
+      else if (left || a) this.tryJump();
+      else if (right || d) this.trySlide();
+      else if (space) this.tryJump();
+    } else {
+      if (left || a) this.queueLane(-1);
+      else if (right || d) this.queueLane(1);
+      else if (up || w || space) this.tryJump();
+      else if (down || s) this.trySlide();
+    }
   }
 
   update(): void {
