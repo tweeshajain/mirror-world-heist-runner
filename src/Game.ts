@@ -34,6 +34,8 @@ const MIRROR_CYCLE_MS = 15000;
 const MIRROR_WARN_MS = 1000;
 /** At or above this floor score, each mirror telegraph (“SYSTEM ERROR”) swaps vertical ↔ horizontal inputs. */
 const MIRROR_SYSERR_AXIS_SWAP_SCORE = 10000;
+/** After that score, each new mirror cycle rolls this chance for “axis scramble” during the system-error telegraph only (~one of three). */
+const MIRROR_SYSERR_AXIS_SWAP_CHANCE = 1 / 3;
 const STARTING_LIVES = 3;
 /** After Mirror Reality fires (system error banner ends), obstacle hits do not cost lives (ms). */
 const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
@@ -305,6 +307,8 @@ export class Game {
 
   private mirrorNextFireAt = 0;
   private mirrorWarningStartAt = 0;
+  /** Rolled in `scheduleMirrorRealityCycle`: if true, next telegraph uses ↑↓↔←→ (when score gate applies). */
+  private mirrorTelegraphAxisSwap = false;
   private mirrorAnnounceUntil = 0;
   private lastMirrorMessage = "";
 
@@ -790,6 +794,7 @@ export class Game {
     this.mirrorCamRoll = 0;
     this.mirrorNextFireAt = 0;
     this.mirrorWarningStartAt = 0;
+    this.mirrorTelegraphAxisSwap = false;
     this.stumbleCooldown = 0;
     this.lives = STARTING_LIVES;
     this.lifeLostBannerUntil = 0;
@@ -887,6 +892,8 @@ export class Game {
   private scheduleMirrorRealityCycle(fromTime: number): void {
     this.mirrorNextFireAt = fromTime + MIRROR_CYCLE_MS;
     this.mirrorWarningStartAt = this.mirrorNextFireAt - MIRROR_WARN_MS;
+    this.mirrorTelegraphAxisSwap =
+      Math.floor(this.score) >= MIRROR_SYSERR_AXIS_SWAP_SCORE && Math.random() < MIRROR_SYSERR_AXIS_SWAP_CHANCE;
   }
 
   private announce(msg: string, ms = 2200): void {
@@ -917,9 +924,9 @@ export class Game {
     return now >= this.mirrorWarningStartAt && now < this.mirrorNextFireAt;
   }
 
-  /** High-score twist: during the system-error banner, ↑/↓ act like ←/→ (lanes) and ←/→ act like jump/slide. */
+  /** When rolled for this cycle (10k+), system-error telegraph swaps ↑/↓↔←→ like lanes/jump-slide. */
   private isMirrorSysErrAxisSwapActive(now: number): boolean {
-    return Math.floor(this.score) >= MIRROR_SYSERR_AXIS_SWAP_SCORE && this.isMirrorSystemErrorTelegraphImmuneAt(now);
+    return this.mirrorTelegraphAxisSwap && this.isMirrorSystemErrorTelegraphImmuneAt(now);
   }
 
   /** 0–1: mirror flip glitch transition (decaying). */
