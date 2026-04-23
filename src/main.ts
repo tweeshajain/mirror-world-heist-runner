@@ -302,7 +302,7 @@ function setHud(): void {
   const canBottle = live && game.canActivateBottleBoost();
   btnBottleBoost.disabled = !live || !canBottle;
   btnBottleBoost.title = canBottle
-    ? "Tap for 4s super speed + immunity"
+    ? "Tap or Enter for 4s super speed + immunity"
     : live && bottleInv > 0
       ? "Unavailable during pause, life-lost beat, or jetpack flight"
       : "";
@@ -310,7 +310,7 @@ function setHud(): void {
     "aria-label",
     bottleInv > 0
       ? canBottle
-        ? `Boost bottle: ${bottleInv} banked. Tap to activate.`
+        ? `Boost bottle: ${bottleInv} banked. Tap or Enter to activate.`
         : `Boost bottle: ${bottleInv} banked. Currently unavailable.`
       : "Boost bottle",
   );

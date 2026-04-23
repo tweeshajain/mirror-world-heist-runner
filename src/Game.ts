@@ -312,6 +312,9 @@ export class Game {
 
   private mirrorCamRoll = 0;
   private readonly owp = new THREE.Vector3();
+  private readonly tmpCamPos = new THREE.Vector3();
+  /** Shared art for track bottle + HUD potion (baked once). */
+  private bottleBoostPotionTexture: THREE.CanvasTexture | null = null;
 
   private vfxMirrorGlitchUntil = 0;
   private vfxInvertWarpUntil = 0;
@@ -765,7 +768,7 @@ export class Game {
     return true;
   }
 
-  /** Spend one banked charge: 4s super speed + immunity (call from UI tap). */
+  /** Spend one banked charge: 4s super speed + immunity (UI tap or Enter). */
   activateBottleBoost(): void {
     if (!this.canActivateBottleBoost()) return;
     const now = performance.now();
@@ -799,6 +802,8 @@ export class Game {
   dispose(): void {
     window.removeEventListener("resize", this.resizeBound);
     window.removeEventListener("keydown", this.keyDownBound, this.keyListenerOpts);
+    this.bottleBoostPotionTexture?.dispose();
+    this.bottleBoostPotionTexture = null;
     this.renderer.dispose();
   }
 
@@ -2072,52 +2077,111 @@ export class Game {
     this.bottleBoostSpawnAtMs = nowTick + randRange(BOTTLE_BOOST_SPAWN_DELAY_MIN_MS, BOTTLE_BOOST_SPAWN_DELAY_MAX_MS);
   }
 
-  /** Stylized energy bottle (low profile for drive-through collect). */
+  /** Same potion art as the HUD button: 2D bake → billboard plane on the track. */
+  private getBottleBoostPotionTexture(): THREE.CanvasTexture {
+    if (this.bottleBoostPotionTexture) return this.bottleBoostPotionTexture;
+    const dpr = 2;
+    const W = 72;
+    const H = 92;
+    const canvas = document.createElement("canvas");
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    const ctx = canvas.getContext("2d")!;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    const clipPath = new Path2D(
+      "M 28 16 L 44 16 L 46 20 L 46 32 C 46 40 56 48 58 58 A 22 22 0 0 1 14 58 C 16 48 26 40 26 32 L 26 20 L 28 16 Z",
+    );
+    ctx.save();
+    ctx.clip(clipPath);
+
+    const gradPink = ctx.createLinearGradient(12, 0, 60, 0);
+    gradPink.addColorStop(0, "#ff5bd4");
+    gradPink.addColorStop(0.5, "#ff2eb8");
+    gradPink.addColorStop(1, "#c0107a");
+    const pinkPath = new Path2D(
+      "M 12 90 L 60 90 L 60 56 C 52 48 46 56 36 52 C 26 48 20 48 12 56 Z",
+    );
+    ctx.fillStyle = gradPink;
+    ctx.fill(pinkPath);
+
+    const gradBlue = ctx.createLinearGradient(12, 0, 60, 0);
+    gradBlue.addColorStop(0, "#5cf0ff");
+    gradBlue.addColorStop(0.55, "#38c4ff");
+    gradBlue.addColorStop(1, "#1490dc");
+    const bluePath = new Path2D(
+      "M 12 56 C 20 48 26 48 36 52 C 46 56 52 48 60 56 L 60 18 L 12 18 Z",
+    );
+    ctx.fillStyle = gradBlue;
+    ctx.fill(bluePath);
+
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(22, 64, 6, 12, (-28 * Math.PI) / 180, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(24, 30, 4, 6.5, (-22 * Math.PI) / 180, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    const corkPath = new Path2D("M 29 5 L 43 5 L 44.5 14 L 27.5 14 Z");
+    ctx.fillStyle = "#9d6438";
+    ctx.fill(corkPath);
+    ctx.lineWidth = 2.1;
+    ctx.strokeStyle = "#0a0a0a";
+    ctx.stroke(corkPath);
+    ctx.fillStyle = "#2a1810";
+    for (const [x, y, r] of [
+      [33.5, 8.5, 1],
+      [38.5, 9.5, 0.9],
+      [35.5, 11.5, 0.75],
+    ] as const) {
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.lineWidth = 2.85;
+    ctx.strokeStyle = "#0a0a0a";
+    const outlinePath = new Path2D(
+      "M 28 16 L 44 16 L 46 20 L 46 32 C 46 40 56 48 58 58 A 22 22 0 0 1 14 58 C 16 48 26 40 26 32 L 26 20 L 28 16 Z",
+    );
+    ctx.stroke(outlinePath);
+    ctx.stroke(new Path2D("M 27.5 14 L 29 5 L 43 5 L 44.5 14"));
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    this.bottleBoostPotionTexture = tex;
+    return tex;
+  }
+
   private buildBottleBoostPickupMesh(): THREE.Group {
     const root = new THREE.Group();
-    const glass = new THREE.MeshPhysicalMaterial({
-      color: 0x082038,
-      emissive: 0x00ffaa,
-      emissiveIntensity: 0.62,
-      metalness: 0.35,
-      roughness: 0.2,
-      transmission: 0.55,
-      thickness: 0.28,
+    const tex = this.getBottleBoostPotionTexture();
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex,
       transparent: true,
-      opacity: 0.94,
+      opacity: 0.98,
+      depthWrite: false,
+      side: THREE.DoubleSide,
     });
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.24, 0.62, 14), glass);
-    body.position.y = 0.36;
-    body.castShadow = true;
-    root.add(body);
-
-    const capMat = new THREE.MeshStandardMaterial({
-      color: 0x051020,
-      emissive: 0x00eeff,
-      emissiveIntensity: 1.05,
-      metalness: 0.7,
-      roughness: 0.22,
-    });
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.19, 0.12, 14), capMat);
-    cap.position.y = 0.72;
-    cap.castShadow = true;
-    root.add(cap);
-
-    const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(0.34, 0.12, 0.02),
-      new THREE.MeshBasicMaterial({
-        color: 0xfff6aa,
-        transparent: true,
-        opacity: 0.88,
-      }),
-    );
-    stripe.position.set(0.22, 0.38, 0);
-    stripe.rotation.z = 0.15;
-    root.add(stripe);
+    const aspect = 92 / 72;
+    const planeW = 0.56;
+    const planeH = planeW * aspect;
+    const billboard = new THREE.Mesh(new THREE.PlaneGeometry(planeW, planeH), mat);
+    billboard.position.y = 0.42;
+    billboard.frustumCulled = false;
+    root.add(billboard);
 
     root.userData.bottleBoostPickup = true;
-    root.userData.bodyMat = glass;
-    root.userData.capMat = capMat;
+    root.userData.bottleBillboard = billboard;
+    root.userData.billboardMat = mat;
     return root;
   }
 
@@ -2806,10 +2870,14 @@ export class Game {
       const bg = this.bottleBoostPickup.mesh;
       const ph = (bg.userData.phase as number) ?? 0;
       const bobBase = (bg.userData.bobY as number) ?? 0.38;
-      bg.rotation.y += dt * 1.45;
       bg.position.y = bobBase + Math.sin(aliveT * 3.1 + ph) * 0.08;
-      const bm = bg.userData.bodyMat as THREE.MeshPhysicalMaterial | undefined;
-      if (bm) bm.emissiveIntensity = 0.5 + Math.sin(aliveT * 6 + ph) * 0.22;
+      const bill = bg.userData.bottleBillboard as THREE.Mesh | undefined;
+      if (bill) {
+        this.camera.getWorldPosition(this.tmpCamPos);
+        bill.lookAt(this.tmpCamPos);
+      }
+      const bm = bg.userData.billboardMat as THREE.MeshBasicMaterial | undefined;
+      if (bm) bm.opacity = 0.9 + Math.sin(aliveT * 6 + ph) * 0.08;
     }
 
     if (this.mysteryBoxPickup) {
@@ -3093,6 +3161,15 @@ export class Game {
     if (this.isLifeLostFrozen() || this.userPaused) return;
 
     const key = e.key;
+    const enter = code === "Enter" || code === "NumpadEnter" || key === "Enter";
+    if (enter) {
+      if (this.canActivateBottleBoost()) {
+        e.preventDefault();
+        this.activateBottleBoost();
+      }
+      return;
+    }
+
     const kc = (e as KeyboardEvent & { keyCode?: number }).keyCode ?? 0;
     const left = code === "ArrowLeft" || key === "ArrowLeft" || kc === 37;
     const right = code === "ArrowRight" || key === "ArrowRight" || kc === 39;
