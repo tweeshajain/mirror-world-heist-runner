@@ -15,6 +15,12 @@ const OBSTACLE_SPACING_BASE_END = 19;
 const OBSTACLE_TIME_RAMP_S = 125;
 /** Subtracted from spacing per each full SCORE_SPEED_MILESTONE points (easier early, denser later). */
 const OBSTACLE_TIGHTEN_PER_SCORE_TIER = 0.55;
+/** Soft cap 0–1: recent danger builds stress; spacing widens slightly while stress > 0. */
+const ADAPTIVE_CHAOS_DECAY_PER_S = 0.55;
+/** Max fractional spacing increase at full stress (keep subtle). */
+const ADAPTIVE_CHAOS_SPACING_MAX = 0.1;
+const ADAPTIVE_CHAOS_NEAR_MISS = 0.17;
+const ADAPTIVE_CHAOS_LIFE_LOST_HIT = 0.38;
 /** In spawn-distance space: blocks closer than this cannot occupy all three lanes (no unavoidable wall). */
 const BLOCK_CLUSTER_D = 9.5;
 /** Pink block height (world Y); above max jump apex so players must change lanes, not jump over. */
@@ -339,6 +345,8 @@ export class Game {
   private nearMissFlashUntil = 0;
   private lastMirrorProtocolAt = 0;
   private lastStumbleUnderMirror = false;
+  /** 0–1, decays over time; near-misses and life-costing hits widen next obstacle gaps a little. */
+  private adaptiveChaosStress = 0;
 
   private stumbleCooldown = 0;
   private lives = STARTING_LIVES;
@@ -942,6 +950,7 @@ export class Game {
     this.vfxStumblePulseUntil = 0;
     this.nearMissFlashUntil = 0;
     this.lastStumbleUnderMirror = false;
+    this.adaptiveChaosStress = 0;
     this.lastTrailX = LANES[this.playerLane] * LANE_WIDTH;
 
     for (const o of this.obstacles) this.worldGroup.remove(o.mesh);
@@ -3101,6 +3110,7 @@ export class Game {
     this.score += 38;
     this.nearMissFlashUntil = performance.now() + 260;
     this.bumpMirrorCamera(0.028);
+    this.adaptiveChaosStress = Math.min(1, this.adaptiveChaosStress + ADAPTIVE_CHAOS_NEAR_MISS);
   }
 
   /** When obstacle passes behind player, reward razor-thin clears. */
@@ -3187,6 +3197,7 @@ export class Game {
     ) {
       return;
     }
+    this.adaptiveChaosStress = Math.min(1, this.adaptiveChaosStress + ADAPTIVE_CHAOS_LIFE_LOST_HIT);
     this.lives -= 1;
     this.stumble();
     if (this.lives > 0) {
@@ -3391,6 +3402,9 @@ export class Game {
 
       this.ensureChunks();
 
+      this.adaptiveChaosStress *= Math.exp(-dt * ADAPTIVE_CHAOS_DECAY_PER_S);
+      this.adaptiveChaosStress = THREE.MathUtils.clamp(this.adaptiveChaosStress, 0, 1);
+
       const scoreTiers = Math.min(MAX_SPEED_MILESTONES, Math.floor(this.score / SCORE_SPEED_MILESTONE));
       const timeT = Math.min(1, this.aliveTime / OBSTACLE_TIME_RAMP_S);
       const baseSpacing =
@@ -3403,6 +3417,7 @@ export class Game {
       if (this.isFloatRealmMode() && this.floatRealmLaneDriftActive) {
         spacing *= FLOAT_REALM_SECOND_OBSTACLE_SPACING_MUL;
       }
+      spacing *= 1 + ADAPTIVE_CHAOS_SPACING_MAX * this.adaptiveChaosStress;
       if (this.distance >= this.nextObstacleAt) {
         this.spawnObstacle();
         this.nextObstacleAt += spacing;
@@ -3748,6 +3763,7 @@ export class Game {
     this.vfxInvertWarpUntil = 0;
     this.vfxStumblePulseUntil = 0;
     this.nearMissFlashUntil = 0;
+    this.adaptiveChaosStress = 0;
     this.lifeLostBannerUntil = 0;
     this.lifeLostFreezeUntil = 0;
     this.lifeLostHitImmunityUntil = 0;
