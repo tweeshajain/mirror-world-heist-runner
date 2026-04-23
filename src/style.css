@@ -161,6 +161,18 @@ html.mystery-screen-flip {
   text-shadow: 0 0 10px rgba(0, 255, 240, 0.35);
 }
 
+.powerup-hud--float {
+  color: #fff0fc;
+  background: rgba(36, 8, 42, 0.92);
+  border: 1px solid rgba(255, 120, 220, 0.5);
+  box-shadow: 0 0 18px rgba(255, 100, 200, 0.3), 0 0 28px rgba(120, 240, 255, 0.18);
+  text-shadow: 0 0 10px rgba(255, 140, 220, 0.4);
+}
+
+body.float-realm-mode #c-wrap {
+  filter: saturate(1.12) hue-rotate(-8deg);
+}
+
 .mystery-flip-hud {
   pointer-events: none;
   align-self: stretch;

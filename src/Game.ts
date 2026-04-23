@@ -108,6 +108,19 @@ const MYSTERY_DOOR_POST_IMMUNITY_MS = 2000;
 /** After driving through the door, obstacle hits ignored until void ends or this elapses (ms). */
 const MYSTERY_DOOR_ENTRY_IMMUNITY_MS = 2000;
 
+/** After this floor score, a mystery ring pathway is scheduled (wall-clock delay below). */
+const FLOAT_REALM_SCORE_TRIGGER = 1000;
+const FLOAT_REALM_SPAWN_DELAY_MIN_MS = 2200;
+const FLOAT_REALM_SPAWN_DELAY_MAX_MS = 4500;
+/** Wall-clock duration while hazards bob and sway in the air after entering the ring. */
+const FLOAT_REALM_MODE_DURATION_MS = 7000;
+const FLOAT_REALM_PICKUP_Z_OFFSET = 64;
+/** If the ring is missed, another attempt after this delay (ms). */
+const FLOAT_REALM_MISS_RETRY_MIN_MS = 4200;
+const FLOAT_REALM_MISS_RETRY_MAX_MS = 6800;
+const FLOAT_REALM_POST_IMMUNITY_MS = 2000;
+const FLOAT_REALM_ENTRY_IMMUNITY_MS = 2000;
+
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
 type ObstacleKind = "block" | "low" | "high";
@@ -156,6 +169,13 @@ interface ExtraLifePickup {
 }
 
 interface MysteryDoorPickup {
+  mesh: THREE.Group;
+  lane: (typeof LANES)[number];
+  z: number;
+  spawnedAtMs: number;
+}
+
+interface FloatRealmPickup {
   mesh: THREE.Group;
   lane: (typeof LANES)[number];
   z: number;
@@ -358,6 +378,16 @@ export class Game {
   /** After entering the door (void starts), obstacle hits ignored until this time. */
   private mysteryDoorEntryImmunityUntil = 0;
 
+  private floatRealmSpawnAtMs = 0;
+  /** True after the 7s float realm finishes (entered once) or run ends. */
+  private floatRealmWaveComplete = false;
+  private floatRealmPickupSpawnsThisRun = 0;
+  private floatRealmPickup: FloatRealmPickup | null = null;
+  private floatRealmModeUntil = 0;
+  private floatRealmModeStartMs = 0;
+  private floatRealmPostImmunityUntil = 0;
+  private floatRealmEntryImmunityUntil = 0;
+
   private running = false;
   private gameOver = false;
   private gameOverReason = "";
@@ -535,6 +565,11 @@ export class Game {
     if (this.mysteryDoorModeStartMs > t0) this.mysteryDoorModeStartMs = bump(this.mysteryDoorModeStartMs);
     if (this.mysteryDoorPostImmunityUntil > t0) this.mysteryDoorPostImmunityUntil = bump(this.mysteryDoorPostImmunityUntil);
     if (this.mysteryDoorEntryImmunityUntil > t0) this.mysteryDoorEntryImmunityUntil = bump(this.mysteryDoorEntryImmunityUntil);
+    if (this.floatRealmSpawnAtMs > t0) this.floatRealmSpawnAtMs = bump(this.floatRealmSpawnAtMs);
+    if (this.floatRealmModeUntil > t0) this.floatRealmModeUntil = bump(this.floatRealmModeUntil);
+    if (this.floatRealmModeStartMs > t0) this.floatRealmModeStartMs = bump(this.floatRealmModeStartMs);
+    if (this.floatRealmPostImmunityUntil > t0) this.floatRealmPostImmunityUntil = bump(this.floatRealmPostImmunityUntil);
+    if (this.floatRealmEntryImmunityUntil > t0) this.floatRealmEntryImmunityUntil = bump(this.floatRealmEntryImmunityUntil);
     if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
     if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
     if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
@@ -656,6 +691,38 @@ export class Game {
     return this.mysteryDoorModeUntil > 0 && now < this.mysteryDoorModeUntil;
   }
 
+  /** True during the 7s “floating obstacles” beat after driving through the mystery ring (1k+ gate). */
+  isFloatRealmMode(): boolean {
+    if (!this.isRunning()) return false;
+    const now = performance.now();
+    return this.floatRealmModeUntil > 0 && now < this.floatRealmModeUntil;
+  }
+
+  /** Mystery ring on the road + float-realm countdown (scheduled a few seconds after score ≥ 1k). */
+  getFloatRealmHudLine(): string {
+    if (!this.isRunning()) return "";
+    if (this.userPaused) return "";
+    if (this.floatRealmPickup) {
+      return this.floatRealmPickupSpawnsThisRun >= 2
+        ? "Mystery ring — another try · drive through the circle"
+        : "Mystery ring ahead — drive through the glowing circle";
+    }
+    const now = performance.now();
+    if (this.isFloatRealmMode()) {
+      const s = Math.max(0, (this.floatRealmModeUntil - now) / 1000);
+      return `FLOAT REALM — ${s.toFixed(1)}s · hazards drifting`;
+    }
+    if (!this.floatRealmWaveComplete && this.floatRealmSpawnAtMs > 0 && !this.floatRealmPickup && !this.isFloatRealmMode()) {
+      if (now < this.floatRealmSpawnAtMs) {
+        const t = Math.max(0, (this.floatRealmSpawnAtMs - now) / 1000);
+        return this.floatRealmPickupSpawnsThisRun >= 1
+          ? `Mystery ring again in ${t.toFixed(1)}s`
+          : `Mystery ring in ${t.toFixed(1)}s`;
+      }
+    }
+    return "";
+  }
+
   private isJetpackFlying(): boolean {
     return this.jetpackFlyingUntil > 0 && performance.now() < this.jetpackFlyingUntil;
   }
@@ -762,7 +829,18 @@ export class Game {
       this.worldGroup.remove(this.mysteryDoorPickup.mesh);
       this.mysteryDoorPickup = null;
     }
-    document.body.classList.remove("rift-door-mode");
+    this.floatRealmSpawnAtMs = 0;
+    this.floatRealmWaveComplete = false;
+    this.floatRealmPickupSpawnsThisRun = 0;
+    this.floatRealmModeUntil = 0;
+    this.floatRealmModeStartMs = 0;
+    this.floatRealmPostImmunityUntil = 0;
+    this.floatRealmEntryImmunityUntil = 0;
+    if (this.floatRealmPickup) {
+      this.worldGroup.remove(this.floatRealmPickup.mesh);
+      this.floatRealmPickup = null;
+    }
+    document.body.classList.remove("rift-door-mode", "float-realm-mode");
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
     this.thiefRig.rotation.set(0, 0, 0);
     this.thiefRig.position.y = 0;
@@ -937,6 +1015,9 @@ export class Game {
   private applyVisualLayer(mirror: boolean): void {
     const now = performance.now();
     if (this.mysteryDoorModeUntil > 0 && now < this.mysteryDoorModeUntil) {
+      return;
+    }
+    if (this.floatRealmModeUntil > 0 && now < this.floatRealmModeUntil) {
       return;
     }
 
@@ -2189,6 +2270,199 @@ export class Game {
     this.announce("EXIT SEALED · back to normal · 2s immunity", 3200);
   }
 
+  /** Flat neon torus + inner ring — drive-through circle pathway. */
+  private buildFloatRealmPickupMesh(): THREE.Group {
+    const root = new THREE.Group();
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0x14061c,
+      emissive: 0xff55dd,
+      emissiveIntensity: 1.18,
+      metalness: 0.58,
+      roughness: 0.2,
+    });
+    const tube = 0.1;
+    const mainR = 3.28;
+    const torus = new THREE.Mesh(new THREE.TorusGeometry(mainR, tube, 14, 72), ringMat);
+    torus.rotation.x = Math.PI / 2;
+    torus.position.y = 0.045;
+    torus.castShadow = true;
+    root.add(torus);
+
+    const innerMat = ringMat.clone();
+    innerMat.emissive.setHex(0x66eeff);
+    innerMat.emissiveIntensity = 1.05;
+    const innerRing = new THREE.Mesh(new THREE.TorusGeometry(mainR * 0.58, tube * 0.72, 12, 56), innerMat);
+    innerRing.rotation.x = Math.PI / 2;
+    innerRing.position.y = 0.058;
+    innerRing.castShadow = true;
+    root.add(innerRing);
+
+    const glow = new THREE.Mesh(
+      new THREE.RingGeometry(mainR * 0.32, mainR * 0.52, 40),
+      new THREE.MeshBasicMaterial({
+        color: 0xaaddff,
+        transparent: true,
+        opacity: 0.38,
+        side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.y = 0.028;
+    root.add(glow);
+    root.userData.floatRealmPickup = true;
+    root.userData.ringMat = ringMat;
+    root.userData.innerMat = innerMat;
+    root.userData.glowMat = glow.material as THREE.MeshBasicMaterial;
+    return root;
+  }
+
+  private spawnFloatRealmPickup(): void {
+    const laneIdx = 1 as 0 | 1 | 2;
+    const pickupZ = -FLOAT_REALM_PICKUP_Z_OFFSET - this.distance;
+    const { lane, z } = this.resolvePickupLaneAndZ(laneIdx, pickupZ);
+    const g = this.buildFloatRealmPickupMesh();
+    g.scale.setScalar(1.02);
+    const bobY = 0.04;
+    g.position.set(lane * LANE_WIDTH, bobY, z);
+    g.userData.bobY = bobY;
+    g.userData.phase = Math.random() * Math.PI * 2;
+    this.worldGroup.add(g);
+    this.floatRealmPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
+    this.floatRealmPickupSpawnsThisRun += 1;
+    const n = this.floatRealmPickupSpawnsThisRun;
+    this.announce(
+      n >= 2 ? "MYSTERY RING — drift through the circle pathway" : "MYSTERY RING — circle pathway ahead · enter for 7s float realm",
+      n >= 2 ? 3200 : 3400,
+    );
+  }
+
+  private checkFloatRealmPickup(): void {
+    if (!this.floatRealmPickup) return;
+    if (this.isJetpackFlying()) return;
+    if (this.isMysteryDoorMode()) return;
+    if (this.isFloatRealmMode()) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.floatRealmPickup.mesh.getWorldPosition(this.owp);
+    const oz = this.owp.z;
+    const ox = this.owp.x;
+    if (Math.abs(oz - PLAYER_Z) > 1.9) return;
+    if (Math.abs(ox - this.player.position.x) > 2.45) return;
+    if (this.playerY > 2.55) return;
+    this.worldGroup.remove(this.floatRealmPickup.mesh);
+    this.floatRealmPickup = null;
+    const now = performance.now();
+    this.floatRealmModeStartMs = now;
+    this.floatRealmModeUntil = now + FLOAT_REALM_MODE_DURATION_MS;
+    this.floatRealmEntryImmunityUntil = now + FLOAT_REALM_ENTRY_IMMUNITY_MS;
+    this.applyFloatRealmWorldVisuals();
+    this.announce("FLOAT REALM — obstacles fly & float · 7s", 3600);
+  }
+
+  private updateFloatRealmPickupDespawn(now: number): void {
+    if (!this.floatRealmPickup) return;
+    if (now - this.floatRealmPickup.spawnedAtMs < 650) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.floatRealmPickup.mesh.getWorldPosition(this.owp);
+    const wz = this.owp.z;
+    if (wz > DESPAWN_BEHIND + 12) {
+      this.worldGroup.remove(this.floatRealmPickup.mesh);
+      this.floatRealmPickup = null;
+      if (!this.floatRealmWaveComplete) {
+        this.floatRealmSpawnAtMs = now + randRange(FLOAT_REALM_MISS_RETRY_MIN_MS, FLOAT_REALM_MISS_RETRY_MAX_MS);
+        this.announce("MYSTERY RING MISSED · another circle soon", 2600);
+      }
+    }
+  }
+
+  private applyFloatRealmWorldVisuals(): void {
+    const deep = new THREE.Color(0x12081c);
+    const fogTint = new THREE.Color(0x1c0a28);
+    this.scene.background.copy(deep);
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.color.copy(fogTint);
+      this.scene.fog.near = 18;
+      this.scene.fog.far = 86;
+    }
+    this.ambient.intensity = 0.48;
+    this.dirLight.intensity = 0.88;
+    this.fillLight.intensity = 0.58;
+    this.dirLight.color.setHex(0xffb8f0);
+    this.fillLight.color.setHex(0x88eeff);
+
+    const neonEmissive = 0xff66dd;
+    this.worldGroup.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh) || Array.isArray(obj.material)) return;
+      const mat = obj.material;
+      if (obj.userData.neon && mat instanceof THREE.MeshStandardMaterial) {
+        mat.emissive.setHex(neonEmissive);
+        mat.emissiveIntensity = 1.72;
+        mat.color.setHex(0x180818);
+      }
+      if (obj.userData.trackNeonGrid && mat instanceof THREE.MeshStandardMaterial) {
+        mat.emissive.setHex(0xff88ee);
+        mat.emissiveIntensity = 0.72;
+        mat.opacity = 0.28;
+      }
+      if (obj.userData.cityGlass && mat instanceof THREE.MeshPhysicalMaterial) {
+        mat.emissive.setHex(0x401838);
+        mat.emissiveIntensity = 0.38;
+        mat.envMapIntensity = 1.22;
+      }
+      if (obj.userData.groundWet && mat instanceof THREE.MeshPhysicalMaterial) {
+        mat.color.setHex(0x140a18);
+        mat.emissive.setHex(0x280818);
+        mat.emissiveIntensity = 0.18;
+        mat.roughness = 0.11;
+      }
+      if (obj.userData.holoAd && mat instanceof THREE.MeshStandardMaterial) {
+        mat.emissiveIntensity = 1.05;
+        mat.opacity = 0.62;
+      }
+    });
+  }
+
+  private resetObstacleMeshesAfterFloatRealm(): void {
+    for (const o of this.obstacles) {
+      o.mesh.position.y = 0;
+      o.mesh.position.x = o.lane * LANE_WIDTH;
+    }
+  }
+
+  private updateFloatRealmObstacleMotion(now: number): void {
+    if (!this.isFloatRealmMode()) return;
+    const t0 = this.floatRealmModeStartMs;
+    const elapsed = now - t0;
+    for (const o of this.obstacles) {
+      let seed = o.mesh.userData.floatSeed as number | undefined;
+      if (seed === undefined) {
+        seed = Math.random() * Math.PI * 2;
+        o.mesh.userData.floatSeed = seed;
+      }
+      const bob = 0.52 + Math.sin(elapsed * 0.0033 + seed) * 0.92;
+      const sway = Math.sin(elapsed * 0.0025 + seed * 1.63) * 0.48;
+      o.mesh.position.y = bob;
+      o.mesh.position.x = o.lane * LANE_WIDTH + sway;
+    }
+  }
+
+  private exitFloatRealmMode(now: number): void {
+    this.floatRealmModeUntil = 0;
+    this.floatRealmModeStartMs = 0;
+    this.floatRealmEntryImmunityUntil = 0;
+    this.floatRealmSpawnAtMs = 0;
+    this.floatRealmWaveComplete = true;
+    document.body.classList.remove("float-realm-mode");
+    this.resetObstacleMeshesAfterFloatRealm();
+    for (const o of this.obstacles) {
+      delete o.mesh.userData.floatSeed;
+    }
+    this.applyVisualLayer(this.mirrorLayer);
+    this.floatRealmPostImmunityUntil = now + FLOAT_REALM_POST_IMMUNITY_MS;
+    this.announce("PATH SEALED · hazards grounded · 2s immunity", 2800);
+  }
+
   private spawnExtraLifePickup(): void {
     if (this.lives !== 1) {
       this.extraLifeSpawnAtMs = 0;
@@ -2388,6 +2662,17 @@ export class Game {
       if (rm) rm.opacity = 0.22 + Math.sin(aliveT * 5 + ph) * 0.14;
     }
 
+    if (this.floatRealmPickup) {
+      const fg = this.floatRealmPickup.mesh;
+      const ph = (fg.userData.phase as number) ?? 0;
+      const bobBase = (fg.userData.bobY as number) ?? 0.04;
+      fg.rotation.y += dt * 0.75;
+      fg.rotation.z = Math.sin(aliveT * 2.1 + ph) * 0.06;
+      fg.position.y = bobBase + Math.sin(aliveT * 2.85 + ph) * 0.065;
+      const gMat = fg.userData.glowMat as THREE.MeshBasicMaterial | undefined;
+      if (gMat) gMat.opacity = 0.26 + Math.sin(aliveT * 5.8 + ph) * 0.16;
+    }
+
     if (this.mysteryDoorPickup) {
       const dg = this.mysteryDoorPickup.mesh;
       const ph = (dg.userData.phase as number) ?? 0;
@@ -2505,6 +2790,11 @@ export class Game {
     this.lifeLostBannerUntil = now + Math.max(2200, pad + 700);
     this.mirrorNextFireAt += pad;
     this.mirrorWarningStartAt += pad;
+    if (this.floatRealmSpawnAtMs > now) this.floatRealmSpawnAtMs += pad;
+    if (this.floatRealmModeUntil > now) this.floatRealmModeUntil += pad;
+    if (this.floatRealmModeStartMs > now) this.floatRealmModeStartMs += pad;
+    if (this.floatRealmPostImmunityUntil > now) this.floatRealmPostImmunityUntil += pad;
+    if (this.floatRealmEntryImmunityUntil > now) this.floatRealmEntryImmunityUntil += pad;
     if (this.mirrorAnnounceUntil > now) {
       this.mirrorAnnounceUntil += pad;
     }
@@ -2592,7 +2882,9 @@ export class Game {
       nowHit < this.mysteryPostFlipImmunityUntil ||
       nowHit < this.lifeLostHitImmunityUntil ||
       nowHit < this.mysteryDoorPostImmunityUntil ||
-      nowHit < this.mysteryDoorEntryImmunityUntil
+      nowHit < this.mysteryDoorEntryImmunityUntil ||
+      nowHit < this.floatRealmPostImmunityUntil ||
+      nowHit < this.floatRealmEntryImmunityUntil
     ) {
       return;
     }
@@ -2664,6 +2956,9 @@ export class Game {
     const nowWall = performance.now();
     if (this.running && !this.gameOver && this.mysteryDoorModeUntil > 0 && nowWall >= this.mysteryDoorModeUntil) {
       this.exitMysteryDoorMode(nowWall);
+    }
+    if (this.running && !this.gameOver && this.floatRealmModeUntil > 0 && nowWall >= this.floatRealmModeUntil) {
+      this.exitFloatRealmMode(nowWall);
     }
     const lifeFrozen =
       this.running && !this.gameOver && performance.now() < this.lifeLostFreezeUntil;
@@ -2792,6 +3087,10 @@ export class Game {
         }
         return true;
       });
+
+      if (this.isFloatRealmMode()) {
+        this.updateFloatRealmObstacleMotion(nowTick);
+      }
 
       this.checkCollisions();
       this.scanNearMissPasses();
@@ -2922,7 +3221,36 @@ export class Game {
         this.mysteryDoorSpawnAtMs = 0;
         this.spawnMysteryDoorPickup();
       }
-      if (this.jetpackPickup || this.flightCoins.length > 0 || this.mysteryBoxPickup || this.extraLifePickup || this.mysteryDoorPickup) {
+      if (
+        !this.floatRealmWaveComplete &&
+        !this.isFloatRealmMode() &&
+        this.floatRealmSpawnAtMs === 0 &&
+        !this.floatRealmPickup &&
+        !this.isJetpackFlying() &&
+        Math.floor(this.score) >= FLOAT_REALM_SCORE_TRIGGER
+      ) {
+        this.floatRealmSpawnAtMs =
+          nowTick + randRange(FLOAT_REALM_SPAWN_DELAY_MIN_MS, FLOAT_REALM_SPAWN_DELAY_MAX_MS);
+      }
+      if (
+        !this.floatRealmWaveComplete &&
+        this.floatRealmSpawnAtMs > 0 &&
+        nowTick >= this.floatRealmSpawnAtMs &&
+        !this.floatRealmPickup &&
+        !this.isJetpackFlying() &&
+        !this.isMysteryDoorMode()
+      ) {
+        this.floatRealmSpawnAtMs = 0;
+        this.spawnFloatRealmPickup();
+      }
+      if (
+        this.jetpackPickup ||
+        this.flightCoins.length > 0 ||
+        this.mysteryBoxPickup ||
+        this.extraLifePickup ||
+        this.mysteryDoorPickup ||
+        this.floatRealmPickup
+      ) {
         this.animatePickups(dt, this.aliveTime);
       }
       if (this.jetpackPickup) {
@@ -2940,6 +3268,10 @@ export class Game {
       if (this.mysteryDoorPickup) {
         this.checkMysteryDoorPickup();
         this.updateMysteryDoorPickupDespawn(nowTick);
+      }
+      if (this.floatRealmPickup) {
+        this.checkFloatRealmPickup();
+        this.updateFloatRealmPickupDespawn(nowTick);
       }
       if (this.isJetpackFlying()) {
         if (nowTick >= this.jetpackNextCoinAtMs) {
@@ -2988,6 +3320,9 @@ export class Game {
     if (this.running && !this.gameOver && this.isMysteryDoorMode()) {
       this.applyRiftDoorWorldVisuals();
     }
+    if (this.running && !this.gameOver && this.isFloatRealmMode()) {
+      this.applyFloatRealmWorldVisuals();
+    }
   }
 
   private endGame(reason: string): void {
@@ -3032,12 +3367,24 @@ export class Game {
       this.worldGroup.remove(this.mysteryDoorPickup.mesh);
       this.mysteryDoorPickup = null;
     }
+    this.floatRealmSpawnAtMs = 0;
+    this.floatRealmWaveComplete = false;
+    this.floatRealmPickupSpawnsThisRun = 0;
+    this.floatRealmModeUntil = 0;
+    this.floatRealmModeStartMs = 0;
+    this.floatRealmPostImmunityUntil = 0;
+    this.floatRealmEntryImmunityUntil = 0;
+    if (this.floatRealmPickup) {
+      this.worldGroup.remove(this.floatRealmPickup.mesh);
+      this.floatRealmPickup = null;
+    }
+    this.resetObstacleMeshesAfterFloatRealm();
     this.mysteryScreenFlipUntil = 0;
     this.mysteryFlipImmunityUntil = 0;
     this.mysteryPostFlipImmunityUntil = 0;
     this.prevMysteryFlipActive = false;
 
-    document.body.classList.remove("mirror-warning", "mirror-flash", "rift-door-mode");
+    document.body.classList.remove("mirror-warning", "mirror-flash", "rift-door-mode", "float-realm-mode");
     this.mirrorAnnounceUntil = 0;
     this.vfxMirrorGlitchUntil = 0;
     this.vfxInvertWarpUntil = 0;
