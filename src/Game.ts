@@ -109,17 +109,30 @@ const MYSTERY_DOOR_POST_IMMUNITY_MS = 2000;
 const MYSTERY_DOOR_ENTRY_IMMUNITY_MS = 2000;
 
 /** After this floor score, a mystery ring pathway is scheduled (wall-clock delay below). */
-const FLOAT_REALM_SCORE_TRIGGER = 1000;
+const FLOAT_REALM_SCORE_TRIGGER = 9000;
 const FLOAT_REALM_SPAWN_DELAY_MIN_MS = 2200;
 const FLOAT_REALM_SPAWN_DELAY_MAX_MS = 4500;
 /** Wall-clock duration while hazards bob and sway in the air after entering the ring. */
 const FLOAT_REALM_MODE_DURATION_MS = 7000;
 const FLOAT_REALM_PICKUP_Z_OFFSET = 64;
-/** If the ring is missed, another attempt after this delay (ms). */
-const FLOAT_REALM_MISS_RETRY_MIN_MS = 4200;
-const FLOAT_REALM_MISS_RETRY_MAX_MS = 6800;
+/** If the ring is missed (off-track only), another attempt after this delay (ms) — kept long so it is not spammy. */
+const FLOAT_REALM_MISS_RETRY_MIN_MS = 14000;
+const FLOAT_REALM_MISS_RETRY_MAX_MS = 22000;
 const FLOAT_REALM_POST_IMMUNITY_MS = 2000;
 const FLOAT_REALM_ENTRY_IMMUNITY_MS = 2000;
+
+/** Floor-score gates: a bottle boost pickup is scheduled a few seconds after each (once per gate per run). */
+const BOTTLE_BOOST_SCORE_GATES = [3000, 8000] as const;
+const BOTTLE_BOOST_SPAWN_DELAY_MIN_MS = 2200;
+const BOTTLE_BOOST_SPAWN_DELAY_MAX_MS = 4200;
+const BOTTLE_BOOST_DURATION_MS = 4000;
+const BOTTLE_BOOST_PICKUP_Z_OFFSET = 58;
+const BOTTLE_BOOST_MISS_RETRY_MIN_MS = 3800;
+const BOTTLE_BOOST_MISS_RETRY_MAX_MS = 6200;
+/** Extra target speed and cap while the boost is active. */
+const BOTTLE_BOOST_TARGET_V_BONUS = 24;
+const BOTTLE_BOOST_VMAX_BONUS = 16;
+const BOTTLE_BOOST_VMIN_FLOOR = 22;
 
 export type MirrorEventType = "invert_lr" | "swap_jump_slide" | "full_shift";
 
@@ -180,6 +193,14 @@ interface FloatRealmPickup {
   lane: (typeof LANES)[number];
   z: number;
   spawnedAtMs: number;
+}
+
+interface BottleBoostPickup {
+  mesh: THREE.Group;
+  lane: (typeof LANES)[number];
+  z: number;
+  spawnedAtMs: number;
+  gateIndex: 0 | 1;
 }
 
 function createMysteryQuestionTexture(): THREE.CanvasTexture {
@@ -388,6 +409,14 @@ export class Game {
   private floatRealmPostImmunityUntil = 0;
   private floatRealmEntryImmunityUntil = 0;
 
+  private bottleBoostGateCollected: [boolean, boolean] = [false, false];
+  private bottleBoostSpawnAtMs = 0;
+  /** Which gate the pending spawn is for (set with `bottleBoostSpawnAtMs`). */
+  private bottleBoostScheduledGate: 0 | 1 | null = null;
+  private bottleBoostPickup: BottleBoostPickup | null = null;
+  /** While `performance.now() <` this, super speed + obstacle immunity. */
+  private bottleBoostSuperUntil = 0;
+
   private running = false;
   private gameOver = false;
   private gameOverReason = "";
@@ -570,6 +599,8 @@ export class Game {
     if (this.floatRealmModeStartMs > t0) this.floatRealmModeStartMs = bump(this.floatRealmModeStartMs);
     if (this.floatRealmPostImmunityUntil > t0) this.floatRealmPostImmunityUntil = bump(this.floatRealmPostImmunityUntil);
     if (this.floatRealmEntryImmunityUntil > t0) this.floatRealmEntryImmunityUntil = bump(this.floatRealmEntryImmunityUntil);
+    if (this.bottleBoostSpawnAtMs > t0) this.bottleBoostSpawnAtMs = bump(this.bottleBoostSpawnAtMs);
+    if (this.bottleBoostSuperUntil > t0) this.bottleBoostSuperUntil = bump(this.bottleBoostSuperUntil);
     if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
     if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
     if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
@@ -616,7 +647,7 @@ export class Game {
     return "";
   }
 
-  /** Jetpack-only HUD (flight timer, pickup cue). Shown separately from mystery box. */
+  /** Jetpack-only HUD: in-flight timer only (no pickup preview). */
   getJetpackHudLine(): string {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
@@ -624,15 +655,11 @@ export class Game {
       const s = Math.max(0, (this.jetpackFlyingUntil - performance.now()) / 1000);
       return `Jetpack: ${s.toFixed(1)}s left · lane coins +${COIN_SCORE_BONUS}`;
     }
-    if (this.jetpackPickup) return "Jetpack pickup ahead";
     return "";
   }
 
-  /** Mystery box pickup cue only (upside-down countdown uses `#mystery-flip-hud`). */
+  /** Mystery box: no “ahead” HUD (flip countdown uses `#mystery-flip-hud` only). */
   getMysteryPickupHudLine(): string {
-    if (!this.isRunning()) return "";
-    if (this.userPaused) return "";
-    if (this.mysteryBoxPickup) return "Mystery box ahead";
     return "";
   }
 
@@ -653,15 +680,10 @@ export class Game {
     return "Extra life incoming…";
   }
 
-  /** Mystery door portal + void-run countdown (12k+ gate). */
+  /** Mystery door: void-run timer only (no portal preview or respawn countdown). */
   getMysteryDoorHudLine(): string {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
-    if (this.mysteryDoorPickup) {
-      return this.mysteryDoorPickupSpawnsThisRun >= 2
-        ? "Mystery door — another try · run through it"
-        : "Mystery door ahead — run through it";
-    }
     const now = performance.now();
     if (this.isMysteryDoorMode()) {
       const s = Math.max(0, (this.mysteryDoorModeUntil - now) / 1000);
@@ -669,17 +691,6 @@ export class Game {
       return phase === "slow"
         ? `VOID RUN — ${s.toFixed(1)}s left · slow pull`
         : `VOID RUN — ${s.toFixed(1)}s left · SURGE (auto exit)`;
-    }
-    if (
-      !this.mysteryDoorWaveComplete &&
-      this.mysteryDoorSpawnAtMs > 0 &&
-      this.mysteryDoorPickupSpawnsThisRun >= 1
-    ) {
-      if (now < this.mysteryDoorSpawnAtMs) {
-        const s = Math.max(0, (this.mysteryDoorSpawnAtMs - now) / 1000);
-        return `Mystery door again in ${s.toFixed(1)}s`;
-      }
-      return "Mystery door incoming…";
     }
     return "";
   }
@@ -691,34 +702,38 @@ export class Game {
     return this.mysteryDoorModeUntil > 0 && now < this.mysteryDoorModeUntil;
   }
 
-  /** True during the 7s “floating obstacles” beat after driving through the mystery ring (1k+ gate). */
+  /** True during the 7s “floating obstacles” beat after driving through the mystery ring (9k+ gate). */
   isFloatRealmMode(): boolean {
     if (!this.isRunning()) return false;
     const now = performance.now();
     return this.floatRealmModeUntil > 0 && now < this.floatRealmModeUntil;
   }
 
-  /** Mystery ring on the road + float-realm countdown (scheduled a few seconds after score ≥ 1k). */
+  /** Float realm: active beat only (no ring preview or spawn countdown). */
   getFloatRealmHudLine(): string {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
-    if (this.floatRealmPickup) {
-      return this.floatRealmPickupSpawnsThisRun >= 2
-        ? "Mystery ring — another try · drive through the circle"
-        : "Mystery ring ahead — drive through the glowing circle";
-    }
     const now = performance.now();
     if (this.isFloatRealmMode()) {
       const s = Math.max(0, (this.floatRealmModeUntil - now) / 1000);
       return `FLOAT REALM — ${s.toFixed(1)}s · hazards drifting`;
     }
-    if (!this.floatRealmWaveComplete && this.floatRealmSpawnAtMs > 0 && !this.floatRealmPickup && !this.isFloatRealmMode()) {
-      if (now < this.floatRealmSpawnAtMs) {
-        const t = Math.max(0, (this.floatRealmSpawnAtMs - now) / 1000);
-        return this.floatRealmPickupSpawnsThisRun >= 1
-          ? `Mystery ring again in ${t.toFixed(1)}s`
-          : `Mystery ring in ${t.toFixed(1)}s`;
-      }
+    return "";
+  }
+
+  /** True while the 4s bottle boost (super speed + hazard immunity) is active. */
+  isBottleBoostActive(): boolean {
+    return this.isRunning() && performance.now() < this.bottleBoostSuperUntil;
+  }
+
+  /** Bottle boost: active rush timer only (no pickup or spawn preview). */
+  getBottleBoostHudLine(): string {
+    if (!this.isRunning()) return "";
+    if (this.userPaused) return "";
+    const now = performance.now();
+    if (this.isBottleBoostActive()) {
+      const s = Math.max(0, (this.bottleBoostSuperUntil - now) / 1000);
+      return `BOOST — ${s.toFixed(1)}s · super speed + immunity`;
     }
     return "";
   }
@@ -839,6 +854,14 @@ export class Game {
     if (this.floatRealmPickup) {
       this.worldGroup.remove(this.floatRealmPickup.mesh);
       this.floatRealmPickup = null;
+    }
+    this.bottleBoostGateCollected = [false, false];
+    this.bottleBoostSpawnAtMs = 0;
+    this.bottleBoostScheduledGate = null;
+    this.bottleBoostSuperUntil = 0;
+    if (this.bottleBoostPickup) {
+      this.worldGroup.remove(this.bottleBoostPickup.mesh);
+      this.bottleBoostPickup = null;
     }
     document.body.classList.remove("rift-door-mode", "float-realm-mode");
     this.prevPlayerWorldX = LANES[this.playerLane] * LANE_WIDTH;
@@ -1956,15 +1979,6 @@ export class Game {
     this.jetpackPickup = { mesh: g, lane, z };
     this.jetpackPickupSpawnsThisRun += 1;
     if (fromLateScoreGate) this.jetpackPendingLateResolve = true;
-    const n = this.jetpackPickupSpawnsThisRun;
-    this.announce(
-      fromLateScoreGate
-        ? "JETPACK — 12k+ bonus · drive through it"
-        : n >= 2
-          ? "JETPACK — second chance · drive through it"
-          : "JETPACK READY — drive through it",
-      fromLateScoreGate ? 2800 : 2400,
-    );
   }
 
   private checkJetpackPickup(): void {
@@ -1981,7 +1995,6 @@ export class Game {
     const now = performance.now();
     this.jetpackFlyingUntil = now + JETPACK_FLY_DURATION_MS;
     this.jetpackNextCoinAtMs = now + 120;
-    this.announce("JETPACK LIVE — 5s · lane into coins", 2200);
   }
 
   private updateJetpackPickupDespawn(now: number): void {
@@ -1998,6 +2011,121 @@ export class Game {
       if (this.jetpackEnteredFlightThisRun || this.jetpackPickupSpawnsThisRun >= 2) {
         this.jetpackUsedThisRun = true;
       }
+    }
+  }
+
+  private getNextBottleBoostGate(): 0 | 1 | null {
+    if (!this.bottleBoostGateCollected[0] && Math.floor(this.score) >= BOTTLE_BOOST_SCORE_GATES[0]) return 0;
+    if (!this.bottleBoostGateCollected[1] && Math.floor(this.score) >= BOTTLE_BOOST_SCORE_GATES[1]) return 1;
+    return null;
+  }
+
+  private tryScheduleBottleBoostSpawn(nowTick: number): void {
+    if (this.bottleBoostGateCollected[0] && this.bottleBoostGateCollected[1]) return;
+    if (this.bottleBoostPickup || this.bottleBoostSpawnAtMs > 0) return;
+    if (this.isJetpackFlying() || this.jetpackPickup) return;
+    if (nowTick < this.bottleBoostSuperUntil) return;
+    const next = this.getNextBottleBoostGate();
+    if (next === null) return;
+    this.bottleBoostScheduledGate = next;
+    this.bottleBoostSpawnAtMs = nowTick + randRange(BOTTLE_BOOST_SPAWN_DELAY_MIN_MS, BOTTLE_BOOST_SPAWN_DELAY_MAX_MS);
+  }
+
+  /** Stylized energy bottle (low profile for drive-through collect). */
+  private buildBottleBoostPickupMesh(): THREE.Group {
+    const root = new THREE.Group();
+    const glass = new THREE.MeshPhysicalMaterial({
+      color: 0x082038,
+      emissive: 0x00ffaa,
+      emissiveIntensity: 0.62,
+      metalness: 0.35,
+      roughness: 0.2,
+      transmission: 0.55,
+      thickness: 0.28,
+      transparent: true,
+      opacity: 0.94,
+    });
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.24, 0.62, 14), glass);
+    body.position.y = 0.36;
+    body.castShadow = true;
+    root.add(body);
+
+    const capMat = new THREE.MeshStandardMaterial({
+      color: 0x051020,
+      emissive: 0x00eeff,
+      emissiveIntensity: 1.05,
+      metalness: 0.7,
+      roughness: 0.22,
+    });
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.19, 0.12, 14), capMat);
+    cap.position.y = 0.72;
+    cap.castShadow = true;
+    root.add(cap);
+
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, 0.12, 0.02),
+      new THREE.MeshBasicMaterial({
+        color: 0xfff6aa,
+        transparent: true,
+        opacity: 0.88,
+      }),
+    );
+    stripe.position.set(0.22, 0.38, 0);
+    stripe.rotation.z = 0.15;
+    root.add(stripe);
+
+    root.userData.bottleBoostPickup = true;
+    root.userData.bodyMat = glass;
+    root.userData.capMat = capMat;
+    return root;
+  }
+
+  private spawnBottleBoostPickup(gateIndex: 0 | 1): void {
+    const laneIdx = THREE.MathUtils.clamp(this.targetLane, 0, 2) as 0 | 1 | 2;
+    const pickupZ = -BOTTLE_BOOST_PICKUP_Z_OFFSET - this.distance;
+    const { lane, z } = this.resolvePickupLaneAndZ(laneIdx, pickupZ);
+    const g = this.buildBottleBoostPickupMesh();
+    g.scale.setScalar(1.32);
+    const bobBaseY = 0.38;
+    g.position.set(lane * LANE_WIDTH, bobBaseY, z);
+    g.userData.bobY = bobBaseY;
+    g.userData.phase = Math.random() * Math.PI * 2;
+    this.worldGroup.add(g);
+    this.bottleBoostPickup = { mesh: g, lane, z, spawnedAtMs: performance.now(), gateIndex };
+    this.bottleBoostScheduledGate = null;
+  }
+
+  private checkBottleBoostPickup(): void {
+    if (!this.bottleBoostPickup || this.isJetpackFlying()) return;
+    this.worldGroup.updateMatrixWorld(true);
+    this.bottleBoostPickup.mesh.getWorldPosition(this.owp);
+    const oz = this.owp.z;
+    const ox = this.owp.x;
+    if (Math.abs(oz - PLAYER_Z) > 1.45) return;
+    if (Math.abs(ox - this.player.position.x) > 1.28) return;
+    if (this.playerY > 1.35) return;
+    const gate = this.bottleBoostPickup.gateIndex;
+    this.worldGroup.remove(this.bottleBoostPickup.mesh);
+    this.bottleBoostPickup = null;
+    const now = performance.now();
+    this.bottleBoostGateCollected[gate] = true;
+    this.bottleBoostSuperUntil = now + BOTTLE_BOOST_DURATION_MS;
+    this.velocityZ = THREE.MathUtils.clamp(this.velocityZ * 1.2 + 6, BOTTLE_BOOST_VMIN_FLOOR, 95);
+    this.bottleBoostSpawnAtMs = 0;
+    this.bottleBoostScheduledGate = null;
+  }
+
+  private updateBottleBoostPickupDespawn(now: number): void {
+    if (!this.bottleBoostPickup || this.isJetpackFlying()) return;
+    if (now - this.bottleBoostPickup.spawnedAtMs < 650) return;
+    this.bottleBoostPickup.mesh.getWorldPosition(this.owp);
+    const wz = this.owp.z;
+    if (wz > DESPAWN_BEHIND + 12) {
+      const missedGate = this.bottleBoostPickup.gateIndex;
+      this.worldGroup.remove(this.bottleBoostPickup.mesh);
+      this.bottleBoostPickup = null;
+      this.bottleBoostScheduledGate = missedGate;
+      this.bottleBoostSpawnAtMs = now + randRange(BOTTLE_BOOST_MISS_RETRY_MIN_MS, BOTTLE_BOOST_MISS_RETRY_MAX_MS);
     }
   }
 
@@ -2052,17 +2180,6 @@ export class Game {
     this.worldGroup.add(g);
     this.mysteryBoxPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
     this.mysteryBoxPickupSpawnsThisRun += 1;
-    const n = this.mysteryBoxPickupSpawnsThisRun;
-    const msg = fromLate14k
-      ? "MYSTERY BOX — 14k+ encore · drive through if you dare"
-      : n >= 4
-        ? "MYSTERY BOX — another chance · grab the flip"
-        : n >= 3
-          ? "MYSTERY BOX — in your lane · last chance"
-          : n >= 2
-            ? "MYSTERY BOX — second chance · in your lane"
-            : "MYSTERY BOX — drive through it if you dare";
-    this.announce(msg, fromLate14k || n >= 2 ? 3000 : 2600);
     if (fromLate14k) this.mysteryBoxLateWaveDone = true;
   }
 
@@ -2162,14 +2279,6 @@ export class Game {
     this.worldGroup.add(g);
     this.mysteryDoorPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
     this.mysteryDoorPickupSpawnsThisRun += 1;
-    const n = this.mysteryDoorPickupSpawnsThisRun;
-    const msg =
-      n >= 4
-        ? "MYSTERY DOOR — another portal · run through"
-        : n >= 2
-          ? "MYSTERY DOOR — second chance · run through"
-          : "MYSTERY DOOR — run through the neon gate";
-    this.announce(msg, n >= 2 ? 3200 : 3000);
   }
 
   private checkMysteryDoorPickup(): void {
@@ -2205,7 +2314,6 @@ export class Game {
       this.mysteryDoorPickup = null;
       if (!this.mysteryDoorWaveComplete) {
         this.mysteryDoorSpawnAtMs = now + randRange(MYSTERY_DOOR_RETRY_DELAY_MIN_MS, MYSTERY_DOOR_RETRY_DELAY_MAX_MS);
-        this.announce("MYSTERY DOOR MISSED · another portal in 7–10s", 2800);
       }
     }
   }
@@ -2321,21 +2429,24 @@ export class Game {
   private spawnFloatRealmPickup(): void {
     const laneIdx = 1 as 0 | 1 | 2;
     const pickupZ = -FLOAT_REALM_PICKUP_Z_OFFSET - this.distance;
-    const { lane, z } = this.resolvePickupLaneAndZ(laneIdx, pickupZ);
+    const { z } = this.resolvePickupLaneAndZ(laneIdx, pickupZ);
     const g = this.buildFloatRealmPickupMesh();
     g.scale.setScalar(1.02);
     const bobY = 0.04;
-    g.position.set(lane * LANE_WIDTH, bobY, z);
+    /** Center span so all lanes pass through the ring; lane field kept for HUD/obstacle helpers. */
+    g.position.set(0, bobY, z);
     g.userData.bobY = bobY;
     g.userData.phase = Math.random() * Math.PI * 2;
     this.worldGroup.add(g);
-    this.floatRealmPickup = { mesh: g, lane, z, spawnedAtMs: performance.now() };
+    this.floatRealmPickup = { mesh: g, lane: 0, z, spawnedAtMs: performance.now() };
     this.floatRealmPickupSpawnsThisRun += 1;
-    const n = this.floatRealmPickupSpawnsThisRun;
-    this.announce(
-      n >= 2 ? "MYSTERY RING — drift through the circle pathway" : "MYSTERY RING — circle pathway ahead · enter for 7s float realm",
-      n >= 2 ? 3200 : 3400,
-    );
+  }
+
+  private enterFloatRealmFromRing(now: number): void {
+    this.floatRealmModeStartMs = now;
+    this.floatRealmModeUntil = now + FLOAT_REALM_MODE_DURATION_MS;
+    this.floatRealmEntryImmunityUntil = now + FLOAT_REALM_ENTRY_IMMUNITY_MS;
+    this.applyFloatRealmWorldVisuals();
   }
 
   private checkFloatRealmPickup(): void {
@@ -2347,31 +2458,41 @@ export class Game {
     this.floatRealmPickup.mesh.getWorldPosition(this.owp);
     const oz = this.owp.z;
     const ox = this.owp.x;
-    if (Math.abs(oz - PLAYER_Z) > 1.9) return;
-    if (Math.abs(ox - this.player.position.x) > 2.45) return;
-    if (this.playerY > 2.55) return;
+    const px = this.player.position.x;
+    if (Math.abs(oz - PLAYER_Z) > 2.35) return;
+    if (Math.abs(ox - px) > 3.65) return;
+    if (this.playerY > 4.25) return;
     this.worldGroup.remove(this.floatRealmPickup.mesh);
     this.floatRealmPickup = null;
-    const now = performance.now();
-    this.floatRealmModeStartMs = now;
-    this.floatRealmModeUntil = now + FLOAT_REALM_MODE_DURATION_MS;
-    this.floatRealmEntryImmunityUntil = now + FLOAT_REALM_ENTRY_IMMUNITY_MS;
-    this.applyFloatRealmWorldVisuals();
-    this.announce("FLOAT REALM — obstacles fly & float · 7s", 3600);
+    this.enterFloatRealmFromRing(performance.now());
   }
 
   private updateFloatRealmPickupDespawn(now: number): void {
     if (!this.floatRealmPickup) return;
     if (now - this.floatRealmPickup.spawnedAtMs < 650) return;
+    if (this.isFloatRealmMode()) return;
     this.worldGroup.updateMatrixWorld(true);
     this.floatRealmPickup.mesh.getWorldPosition(this.owp);
     const wz = this.owp.z;
+    const ox = this.owp.x;
+    const px = this.player.position.x;
+    const wideZ = Math.abs(wz - PLAYER_Z) < 2.55;
+    const wideX = Math.abs(ox - px) < 3.75;
+    /** Ring is centered on the road; if it is passing through the runner’s column, pull them in (cannot lane-dodge out). */
+    const forceThroughLane = wideZ && wideX && !this.isJetpackFlying() && !this.isMysteryDoorMode();
+    /** Last resort: ring is leaving play — still grant the realm so the arc always completes. */
+    const forceCatchUp = wz > DESPAWN_BEHIND + 8 && !this.isJetpackFlying() && !this.isMysteryDoorMode();
+    if (forceThroughLane || forceCatchUp) {
+      this.worldGroup.remove(this.floatRealmPickup.mesh);
+      this.floatRealmPickup = null;
+      this.enterFloatRealmFromRing(now);
+      return;
+    }
     if (wz > DESPAWN_BEHIND + 12) {
       this.worldGroup.remove(this.floatRealmPickup.mesh);
       this.floatRealmPickup = null;
       if (!this.floatRealmWaveComplete) {
         this.floatRealmSpawnAtMs = now + randRange(FLOAT_REALM_MISS_RETRY_MIN_MS, FLOAT_REALM_MISS_RETRY_MAX_MS);
-        this.announce("MYSTERY RING MISSED · another circle soon", 2600);
       }
     }
   }
@@ -2642,6 +2763,16 @@ export class Game {
       if (flameCoreMat) flameCoreMat.opacity = 0.42 + Math.sin(fp * 1.05) * 0.12;
     }
 
+    if (this.bottleBoostPickup) {
+      const bg = this.bottleBoostPickup.mesh;
+      const ph = (bg.userData.phase as number) ?? 0;
+      const bobBase = (bg.userData.bobY as number) ?? 0.38;
+      bg.rotation.y += dt * 1.45;
+      bg.position.y = bobBase + Math.sin(aliveT * 3.1 + ph) * 0.08;
+      const bm = bg.userData.bodyMat as THREE.MeshPhysicalMaterial | undefined;
+      if (bm) bm.emissiveIntensity = 0.5 + Math.sin(aliveT * 6 + ph) * 0.22;
+    }
+
     if (this.mysteryBoxPickup) {
       const mg = this.mysteryBoxPickup.mesh;
       const ph = (mg.userData.phase as number) ?? 0;
@@ -2775,6 +2906,7 @@ export class Game {
   }
 
   private stumble(): void {
+    if (performance.now() < this.bottleBoostSuperUntil) return;
     if (this.stumbleCooldown > 0) return;
     this.stumbleCooldown = 0.32;
     this.velocityZ *= 0.82;
@@ -2795,6 +2927,8 @@ export class Game {
     if (this.floatRealmModeStartMs > now) this.floatRealmModeStartMs += pad;
     if (this.floatRealmPostImmunityUntil > now) this.floatRealmPostImmunityUntil += pad;
     if (this.floatRealmEntryImmunityUntil > now) this.floatRealmEntryImmunityUntil += pad;
+    if (this.bottleBoostSpawnAtMs > now) this.bottleBoostSpawnAtMs += pad;
+    if (this.bottleBoostSuperUntil > now) this.bottleBoostSuperUntil += pad;
     if (this.mirrorAnnounceUntil > now) {
       this.mirrorAnnounceUntil += pad;
     }
@@ -2884,7 +3018,8 @@ export class Game {
       nowHit < this.mysteryDoorPostImmunityUntil ||
       nowHit < this.mysteryDoorEntryImmunityUntil ||
       nowHit < this.floatRealmPostImmunityUntil ||
-      nowHit < this.floatRealmEntryImmunityUntil
+      nowHit < this.floatRealmEntryImmunityUntil ||
+      nowHit < this.bottleBoostSuperUntil
     ) {
       return;
     }
@@ -2978,6 +3113,11 @@ export class Game {
         this.announce("JETPACK OFF · 2s immunity", 2000);
       }
 
+      if (this.bottleBoostSuperUntil !== 0 && nowTick >= this.bottleBoostSuperUntil) {
+        this.bottleBoostSuperUntil = 0;
+        this.announce("BOOST OFF", 1400);
+      }
+
       this.tickMirrorRealitySystem(nowTick);
 
       const diffRamp = 1 + this.aliveTime * 0.02;
@@ -3007,6 +3147,12 @@ export class Game {
           vmax *= 1.2;
           accel = 2.35;
         }
+      }
+      if (nowTick < this.bottleBoostSuperUntil) {
+        targetV += BOTTLE_BOOST_TARGET_V_BONUS;
+        vmax += BOTTLE_BOOST_VMAX_BONUS;
+        vMin = Math.max(vMin, BOTTLE_BOOST_VMIN_FLOOR);
+        accel = Math.max(accel, 2.45);
       }
       this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * accel);
       this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, vMin, vmax);
@@ -3243,13 +3389,26 @@ export class Game {
         this.floatRealmSpawnAtMs = 0;
         this.spawnFloatRealmPickup();
       }
+      this.tryScheduleBottleBoostSpawn(nowTick);
+      if (
+        this.bottleBoostSpawnAtMs > 0 &&
+        nowTick >= this.bottleBoostSpawnAtMs &&
+        !this.bottleBoostPickup &&
+        !this.isJetpackFlying()
+      ) {
+        this.bottleBoostSpawnAtMs = 0;
+        const gate = this.bottleBoostScheduledGate ?? this.getNextBottleBoostGate();
+        this.bottleBoostScheduledGate = null;
+        if (gate !== null) this.spawnBottleBoostPickup(gate);
+      }
       if (
         this.jetpackPickup ||
         this.flightCoins.length > 0 ||
         this.mysteryBoxPickup ||
         this.extraLifePickup ||
         this.mysteryDoorPickup ||
-        this.floatRealmPickup
+        this.floatRealmPickup ||
+        this.bottleBoostPickup
       ) {
         this.animatePickups(dt, this.aliveTime);
       }
@@ -3272,6 +3431,10 @@ export class Game {
       if (this.floatRealmPickup) {
         this.checkFloatRealmPickup();
         this.updateFloatRealmPickupDespawn(nowTick);
+      }
+      if (this.bottleBoostPickup) {
+        this.checkBottleBoostPickup();
+        this.updateBottleBoostPickupDespawn(nowTick);
       }
       if (this.isJetpackFlying()) {
         if (nowTick >= this.jetpackNextCoinAtMs) {
@@ -3377,6 +3540,14 @@ export class Game {
     if (this.floatRealmPickup) {
       this.worldGroup.remove(this.floatRealmPickup.mesh);
       this.floatRealmPickup = null;
+    }
+    this.bottleBoostSpawnAtMs = 0;
+    this.bottleBoostScheduledGate = null;
+    this.bottleBoostSuperUntil = 0;
+    this.bottleBoostGateCollected = [false, false];
+    if (this.bottleBoostPickup) {
+      this.worldGroup.remove(this.bottleBoostPickup.mesh);
+      this.bottleBoostPickup = null;
     }
     this.resetObstacleMeshesAfterFloatRealm();
     this.mysteryScreenFlipUntil = 0;

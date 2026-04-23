@@ -34,6 +34,7 @@ const mysteryBoxHud = document.getElementById("mystery-box-hud") as HTMLDivEleme
 const extraLifeHud = document.getElementById("extra-life-hud") as HTMLDivElement;
 const mysteryDoorHud = document.getElementById("mystery-door-hud") as HTMLDivElement;
 const floatRealmHud = document.getElementById("float-realm-hud") as HTMLDivElement;
+const bottleBoostHud = document.getElementById("bottle-boost-hud") as HTMLDivElement;
 const mysteryFlipHud = document.getElementById("mystery-flip-hud") as HTMLDivElement;
 const playerNameInput = document.getElementById("player-name") as HTMLInputElement;
 const leaderboardStatus = document.getElementById("leaderboard-status") as HTMLParagraphElement;
@@ -195,7 +196,14 @@ function wipeScreenJuice(): void {
   document.documentElement.style.setProperty("--vfx-danger", "0");
   document.documentElement.style.setProperty("--vfx-invert", "0");
   document.documentElement.style.setProperty("--near-miss", "0");
-  document.body.classList.remove("mirror-warning", "mirror-flash", "layer-mirror-city", "rift-door-mode", "float-realm-mode");
+  document.body.classList.remove(
+    "mirror-warning",
+    "mirror-flash",
+    "layer-mirror-city",
+    "rift-door-mode",
+    "float-realm-mode",
+    "bottle-boost-active",
+  );
   cWrap.classList.remove("vfx-glitching");
   scoreEl.classList.remove("near-miss-pop");
   sysErrOverlay.hidden = true;
@@ -222,6 +230,8 @@ function wipeScreenJuice(): void {
   mysteryDoorHud.textContent = "";
   floatRealmHud.hidden = true;
   floatRealmHud.textContent = "";
+  bottleBoostHud.hidden = true;
+  bottleBoostHud.textContent = "";
   mysteryFlipHud.hidden = true;
   mysteryFlipHud.textContent = "";
 }
@@ -271,6 +281,10 @@ function setHud(): void {
   floatRealmHud.hidden = !live || !floatRealmLine;
   floatRealmHud.textContent = floatRealmLine;
 
+  const bottleBoostLine = live ? game.getBottleBoostHudLine() : "";
+  bottleBoostHud.hidden = !live || !bottleBoostLine;
+  bottleBoostHud.textContent = bottleBoostLine;
+
   const warn = live ? game.getMirrorWarningProgress() : 0;
   document.documentElement.style.setProperty("--mirror-warn", String(warn));
   if (warn > 0) {
@@ -301,6 +315,7 @@ function setHud(): void {
   document.body.classList.toggle("game-paused", live && game.isUserPaused());
   document.body.classList.toggle("rift-door-mode", live && game.isMysteryDoorMode());
   document.body.classList.toggle("float-realm-mode", live && game.isFloatRealmMode());
+  document.body.classList.toggle("bottle-boost-active", live && game.isBottleBoostActive());
   document.documentElement.classList.toggle("mystery-screen-flip", live && game.isMysteryScreenFlipped());
   cWrap.setAttribute("aria-hidden", live ? "false" : "true");
 
