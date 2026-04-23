@@ -1,5 +1,5 @@
 import "./style.css";
-import { Game } from "./Game";
+import { Game, MIRROR_SYSERR_AXIS_SWAP_SCORE } from "./Game";
 import { saveRunAndGetLeaderboardSummary } from "./leaderboard";
 import { resolveSupabaseClient } from "./supabase";
 
@@ -24,6 +24,7 @@ const sysErrOverlay = document.getElementById("system-error-overlay") as HTMLDiv
 const sysErrDetail = document.getElementById("syserr-detail")!;
 const sysErrCount = document.getElementById("syserr-count")!;
 const sysErrHex = document.getElementById("syserr-hex")!;
+const sysErrFoot = document.getElementById("syserr-foot")!;
 const lifeLostBanner = document.getElementById("life-lost-banner")!;
 const shatterOverlay = document.getElementById("shatter-overlay") as HTMLDivElement | null;
 const pauseRow = document.getElementById("pause-row") as HTMLDivElement;
@@ -35,6 +36,8 @@ const extraLifeHud = document.getElementById("extra-life-hud") as HTMLDivElement
 const mysteryDoorHud = document.getElementById("mystery-door-hud") as HTMLDivElement;
 const floatRealmHud = document.getElementById("float-realm-hud") as HTMLDivElement;
 const bottleBoostHud = document.getElementById("bottle-boost-hud") as HTMLDivElement;
+const btnBottleBoost = document.getElementById("btn-bottle-boost") as HTMLButtonElement;
+const bottleBoostInvCount = document.getElementById("bottle-boost-inv-count") as HTMLSpanElement;
 const mysteryFlipHud = document.getElementById("mystery-flip-hud") as HTMLDivElement;
 const playerNameInput = document.getElementById("player-name") as HTMLInputElement;
 const leaderboardStatus = document.getElementById("leaderboard-status") as HTMLParagraphElement;
@@ -52,6 +55,11 @@ const SYS_ERR_LINES = [
 ];
 
 const game = new Game(canvas);
+
+btnBottleBoost.addEventListener("click", () => {
+  if (!game.isRunning()) return;
+  game.activateBottleBoost();
+});
 
 let prevNearMiss = 0;
 let prevLifeLostFrozen = false;
@@ -232,6 +240,9 @@ function wipeScreenJuice(): void {
   floatRealmHud.textContent = "";
   bottleBoostHud.hidden = true;
   bottleBoostHud.textContent = "";
+  btnBottleBoost.hidden = true;
+  btnBottleBoost.disabled = true;
+  bottleBoostInvCount.textContent = "0";
   mysteryFlipHud.hidden = true;
   mysteryFlipHud.textContent = "";
 }
@@ -285,6 +296,25 @@ function setHud(): void {
   bottleBoostHud.hidden = !live || !bottleBoostLine;
   bottleBoostHud.textContent = bottleBoostLine;
 
+  const bottleInv = live ? game.getBottleBoostInventory() : 0;
+  btnBottleBoost.hidden = !live || bottleInv <= 0;
+  bottleBoostInvCount.textContent = String(bottleInv);
+  const canBottle = live && game.canActivateBottleBoost();
+  btnBottleBoost.disabled = !live || !canBottle;
+  btnBottleBoost.title = canBottle
+    ? "Tap for 4s super speed + immunity"
+    : live && bottleInv > 0
+      ? "Unavailable during pause, life-lost beat, or jetpack flight"
+      : "";
+  btnBottleBoost.setAttribute(
+    "aria-label",
+    bottleInv > 0
+      ? canBottle
+        ? `Boost bottle: ${bottleInv} banked. Tap to activate.`
+        : `Boost bottle: ${bottleInv} banked. Currently unavailable.`
+      : "Boost bottle",
+  );
+
   const warn = live ? game.getMirrorWarningProgress() : 0;
   document.documentElement.style.setProperty("--mirror-warn", String(warn));
   if (warn > 0) {
@@ -299,12 +329,16 @@ function setHud(): void {
   if (live && warn > 0.02 && sec > 0) {
     sysErrOverlay.hidden = false;
     sysErrOverlay.setAttribute("aria-hidden", "false");
+    const axisSys = game.getScore() >= MIRROR_SYSERR_AXIS_SWAP_SCORE;
     const lineIdx = Math.floor(performance.now() / 200) % SYS_ERR_LINES.length;
     sysErrDetail.textContent = SYS_ERR_LINES[lineIdx]!;
     sysErrCount.textContent = `CONTROL REM LOCK · ${sec.toFixed(1)}s`;
     const hx = (Math.floor(performance.now() * 3.7) % 0xffffff).toString(16).toUpperCase().padStart(6, "0");
     sysErrHex.textContent = `0x${hx}`;
     document.documentElement.style.setProperty("--syserr-pulse", String(warn));
+    sysErrFoot.textContent = axisSys
+      ? "↑↓ = LANES · ←→ = JUMP / SLIDE — DO NOT TRUST MUSCLE MEMORY · AWAIT REM"
+      : "DO NOT TRUST MUSCLE MEMORY · AWAIT REM";
   } else {
     sysErrOverlay.hidden = true;
     sysErrOverlay.setAttribute("aria-hidden", "true");

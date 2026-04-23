@@ -33,9 +33,7 @@ const MAX_SPEED_MILESTONES = 14;
 const MIRROR_CYCLE_MS = 15000;
 const MIRROR_WARN_MS = 1000;
 /** At or above this floor score, each mirror telegraph (“SYSTEM ERROR”) swaps vertical ↔ horizontal inputs. */
-const MIRROR_SYSERR_AXIS_SWAP_SCORE = 10000;
-/** After that score, each new mirror cycle rolls this chance for “axis scramble” during the system-error telegraph only (~one of three). */
-const MIRROR_SYSERR_AXIS_SWAP_CHANCE = 1 / 3;
+export const MIRROR_SYSERR_AXIS_SWAP_SCORE = 10000;
 const STARTING_LIVES = 3;
 /** After Mirror Reality fires (system error banner ends), obstacle hits do not cost lives (ms). */
 const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
@@ -131,6 +129,8 @@ const BOTTLE_BOOST_DURATION_MS = 4000;
 const BOTTLE_BOOST_PICKUP_Z_OFFSET = 58;
 const BOTTLE_BOOST_MISS_RETRY_MIN_MS = 3800;
 const BOTTLE_BOOST_MISS_RETRY_MAX_MS = 6200;
+/** Obstacle immunity after a manual boost ends (ms). */
+const BOTTLE_BOOST_POST_USE_IMMUNITY_MS = 2000;
 /** Extra target speed and cap while the boost is active. */
 const BOTTLE_BOOST_TARGET_V_BONUS = 24;
 const BOTTLE_BOOST_VMAX_BONUS = 16;
@@ -307,8 +307,6 @@ export class Game {
 
   private mirrorNextFireAt = 0;
   private mirrorWarningStartAt = 0;
-  /** Rolled in `scheduleMirrorRealityCycle`: if true, next telegraph uses ↑↓↔←→ (when score gate applies). */
-  private mirrorTelegraphAxisSwap = false;
   private mirrorAnnounceUntil = 0;
   private lastMirrorMessage = "";
 
@@ -413,13 +411,18 @@ export class Game {
   private floatRealmPostImmunityUntil = 0;
   private floatRealmEntryImmunityUntil = 0;
 
-  private bottleBoostGateCollected: [boolean, boolean] = [false, false];
+  /** True once that gate’s track bottle was banked into inventory (max two per run). */
+  private bottleBoostGateBanked: [boolean, boolean] = [false, false];
+  /** Banked charges from track pickups; spent by `activateBottleBoost()`. */
+  private bottleBoostInventory = 0;
   private bottleBoostSpawnAtMs = 0;
   /** Which gate the pending spawn is for (set with `bottleBoostSpawnAtMs`). */
   private bottleBoostScheduledGate: 0 | 1 | null = null;
   private bottleBoostPickup: BottleBoostPickup | null = null;
   /** While `performance.now() <` this, super speed + obstacle immunity. */
   private bottleBoostSuperUntil = 0;
+  /** After boost ends, brief hazard immunity. */
+  private bottleBoostPostImmunityUntil = 0;
 
   private running = false;
   private gameOver = false;
@@ -605,6 +608,7 @@ export class Game {
     if (this.floatRealmEntryImmunityUntil > t0) this.floatRealmEntryImmunityUntil = bump(this.floatRealmEntryImmunityUntil);
     if (this.bottleBoostSpawnAtMs > t0) this.bottleBoostSpawnAtMs = bump(this.bottleBoostSpawnAtMs);
     if (this.bottleBoostSuperUntil > t0) this.bottleBoostSuperUntil = bump(this.bottleBoostSuperUntil);
+    if (this.bottleBoostPostImmunityUntil > t0) this.bottleBoostPostImmunityUntil = bump(this.bottleBoostPostImmunityUntil);
     if (this.vfxMirrorGlitchUntil > t0) this.vfxMirrorGlitchUntil = bump(this.vfxMirrorGlitchUntil);
     if (this.vfxInvertWarpUntil > t0) this.vfxInvertWarpUntil = bump(this.vfxInvertWarpUntil);
     if (this.vfxStumblePulseUntil > t0) this.vfxStumblePulseUntil = bump(this.vfxStumblePulseUntil);
@@ -730,7 +734,7 @@ export class Game {
     return this.isRunning() && performance.now() < this.bottleBoostSuperUntil;
   }
 
-  /** Bottle boost: active rush timer only (no pickup or spawn preview). */
+  /** Bottle boost: active rush + post-use shield line (inventory uses bottom button). */
   getBottleBoostHudLine(): string {
     if (!this.isRunning()) return "";
     if (this.userPaused) return "";
@@ -739,7 +743,36 @@ export class Game {
       const s = Math.max(0, (this.bottleBoostSuperUntil - now) / 1000);
       return `BOOST — ${s.toFixed(1)}s · super speed + immunity`;
     }
+    if (now < this.bottleBoostPostImmunityUntil) {
+      const s = Math.max(0, (this.bottleBoostPostImmunityUntil - now) / 1000);
+      return `BOOST SHIELD — ${s.toFixed(1)}s`;
+    }
     return "";
+  }
+
+  /** Banked bottle charges (from track pickups); tap the on-screen bottle to spend one. */
+  getBottleBoostInventory(): number {
+    return this.bottleBoostInventory;
+  }
+
+  /** Whether the player can tap the bottle to start a boost right now. */
+  canActivateBottleBoost(): boolean {
+    if (!this.isRunning() || this.gameOver || this.userPaused) return false;
+    if (this.isLifeLostFrozen()) return false;
+    if (this.bottleBoostInventory <= 0) return false;
+    if (this.isBottleBoostActive()) return false;
+    if (this.isJetpackFlying()) return false;
+    return true;
+  }
+
+  /** Spend one banked charge: 4s super speed + immunity (call from UI tap). */
+  activateBottleBoost(): void {
+    if (!this.canActivateBottleBoost()) return;
+    const now = performance.now();
+    this.bottleBoostInventory -= 1;
+    this.bottleBoostSuperUntil = now + BOTTLE_BOOST_DURATION_MS;
+    this.velocityZ = THREE.MathUtils.clamp(this.velocityZ * 1.2 + 6, BOTTLE_BOOST_VMIN_FLOOR, 95);
+    this.bottleBoostPostImmunityUntil = 0;
   }
 
   private isJetpackFlying(): boolean {
@@ -794,7 +827,6 @@ export class Game {
     this.mirrorCamRoll = 0;
     this.mirrorNextFireAt = 0;
     this.mirrorWarningStartAt = 0;
-    this.mirrorTelegraphAxisSwap = false;
     this.stumbleCooldown = 0;
     this.lives = STARTING_LIVES;
     this.lifeLostBannerUntil = 0;
@@ -860,10 +892,12 @@ export class Game {
       this.worldGroup.remove(this.floatRealmPickup.mesh);
       this.floatRealmPickup = null;
     }
-    this.bottleBoostGateCollected = [false, false];
+    this.bottleBoostGateBanked = [false, false];
+    this.bottleBoostInventory = 0;
     this.bottleBoostSpawnAtMs = 0;
     this.bottleBoostScheduledGate = null;
     this.bottleBoostSuperUntil = 0;
+    this.bottleBoostPostImmunityUntil = 0;
     if (this.bottleBoostPickup) {
       this.worldGroup.remove(this.bottleBoostPickup.mesh);
       this.bottleBoostPickup = null;
@@ -892,8 +926,6 @@ export class Game {
   private scheduleMirrorRealityCycle(fromTime: number): void {
     this.mirrorNextFireAt = fromTime + MIRROR_CYCLE_MS;
     this.mirrorWarningStartAt = this.mirrorNextFireAt - MIRROR_WARN_MS;
-    this.mirrorTelegraphAxisSwap =
-      Math.floor(this.score) >= MIRROR_SYSERR_AXIS_SWAP_SCORE && Math.random() < MIRROR_SYSERR_AXIS_SWAP_CHANCE;
   }
 
   private announce(msg: string, ms = 2200): void {
@@ -924,9 +956,12 @@ export class Game {
     return now >= this.mirrorWarningStartAt && now < this.mirrorNextFireAt;
   }
 
-  /** When rolled for this cycle (10k+), system-error telegraph swaps ↑/↓↔←→ like lanes/jump-slide. */
+  /** From 10k+ score, the system-error telegraph swaps ↑/↓↔←→ (lanes vs jump/slide). */
   private isMirrorSysErrAxisSwapActive(now: number): boolean {
-    return this.mirrorTelegraphAxisSwap && this.isMirrorSystemErrorTelegraphImmuneAt(now);
+    return (
+      Math.floor(this.score) >= MIRROR_SYSERR_AXIS_SWAP_SCORE &&
+      this.isMirrorSystemErrorTelegraphImmuneAt(now)
+    );
   }
 
   /** 0–1: mirror flip glitch transition (decaying). */
@@ -2022,16 +2057,15 @@ export class Game {
   }
 
   private getNextBottleBoostGate(): 0 | 1 | null {
-    if (!this.bottleBoostGateCollected[0] && Math.floor(this.score) >= BOTTLE_BOOST_SCORE_GATES[0]) return 0;
-    if (!this.bottleBoostGateCollected[1] && Math.floor(this.score) >= BOTTLE_BOOST_SCORE_GATES[1]) return 1;
+    if (!this.bottleBoostGateBanked[0] && Math.floor(this.score) >= BOTTLE_BOOST_SCORE_GATES[0]) return 0;
+    if (!this.bottleBoostGateBanked[1] && Math.floor(this.score) >= BOTTLE_BOOST_SCORE_GATES[1]) return 1;
     return null;
   }
 
   private tryScheduleBottleBoostSpawn(nowTick: number): void {
-    if (this.bottleBoostGateCollected[0] && this.bottleBoostGateCollected[1]) return;
+    if (this.bottleBoostGateBanked[0] && this.bottleBoostGateBanked[1]) return;
     if (this.bottleBoostPickup || this.bottleBoostSpawnAtMs > 0) return;
     if (this.isJetpackFlying() || this.jetpackPickup) return;
-    if (nowTick < this.bottleBoostSuperUntil) return;
     const next = this.getNextBottleBoostGate();
     if (next === null) return;
     this.bottleBoostScheduledGate = next;
@@ -2114,10 +2148,8 @@ export class Game {
     const gate = this.bottleBoostPickup.gateIndex;
     this.worldGroup.remove(this.bottleBoostPickup.mesh);
     this.bottleBoostPickup = null;
-    const now = performance.now();
-    this.bottleBoostGateCollected[gate] = true;
-    this.bottleBoostSuperUntil = now + BOTTLE_BOOST_DURATION_MS;
-    this.velocityZ = THREE.MathUtils.clamp(this.velocityZ * 1.2 + 6, BOTTLE_BOOST_VMIN_FLOOR, 95);
+    this.bottleBoostGateBanked[gate] = true;
+    this.bottleBoostInventory = Math.min(2, this.bottleBoostInventory + 1);
     this.bottleBoostSpawnAtMs = 0;
     this.bottleBoostScheduledGate = null;
   }
@@ -2936,6 +2968,7 @@ export class Game {
     if (this.floatRealmEntryImmunityUntil > now) this.floatRealmEntryImmunityUntil += pad;
     if (this.bottleBoostSpawnAtMs > now) this.bottleBoostSpawnAtMs += pad;
     if (this.bottleBoostSuperUntil > now) this.bottleBoostSuperUntil += pad;
+    if (this.bottleBoostPostImmunityUntil > now) this.bottleBoostPostImmunityUntil += pad;
     if (this.mirrorAnnounceUntil > now) {
       this.mirrorAnnounceUntil += pad;
     }
@@ -3026,7 +3059,8 @@ export class Game {
       nowHit < this.mysteryDoorEntryImmunityUntil ||
       nowHit < this.floatRealmPostImmunityUntil ||
       nowHit < this.floatRealmEntryImmunityUntil ||
-      nowHit < this.bottleBoostSuperUntil
+      nowHit < this.bottleBoostSuperUntil ||
+      nowHit < this.bottleBoostPostImmunityUntil
     ) {
       return;
     }
@@ -3122,6 +3156,7 @@ export class Game {
 
       if (this.bottleBoostSuperUntil !== 0 && nowTick >= this.bottleBoostSuperUntil) {
         this.bottleBoostSuperUntil = 0;
+        this.bottleBoostPostImmunityUntil = nowTick + BOTTLE_BOOST_POST_USE_IMMUNITY_MS;
         this.announce("BOOST OFF", 1400);
       }
 
@@ -3551,11 +3586,13 @@ export class Game {
     this.bottleBoostSpawnAtMs = 0;
     this.bottleBoostScheduledGate = null;
     this.bottleBoostSuperUntil = 0;
-    this.bottleBoostGateCollected = [false, false];
+    this.bottleBoostGateBanked = [false, false];
+    this.bottleBoostInventory = 0;
     if (this.bottleBoostPickup) {
       this.worldGroup.remove(this.bottleBoostPickup.mesh);
       this.bottleBoostPickup = null;
     }
+    this.bottleBoostPostImmunityUntil = 0;
     this.resetObstacleMeshesAfterFloatRealm();
     this.mysteryScreenFlipUntil = 0;
     this.mysteryFlipImmunityUntil = 0;

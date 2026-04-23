@@ -185,6 +185,84 @@ body.bottle-boost-active #c-wrap {
   filter: saturate(1.18) brightness(1.04);
 }
 
+.btn-bottle-boost {
+  position: fixed;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  min-height: 72px;
+  padding: 8px 10px 10px;
+  border-radius: 22px;
+  border: 3px solid #0a0a0a;
+  cursor: pointer;
+  font-family: inherit;
+  color: #e8fff8;
+  background: radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.12), transparent 55%),
+    linear-gradient(165deg, rgba(18, 28, 36, 0.98), rgba(6, 10, 18, 0.99));
+  box-shadow:
+    0 0 0 2px rgba(0, 255, 200, 0.35),
+    0 0 24px rgba(0, 255, 200, 0.25),
+    0 8px 22px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.btn-bottle-boost:hover:not(:disabled) {
+  transform: translateX(-50%) scale(1.06);
+  box-shadow:
+    0 0 0 2px rgba(120, 255, 240, 0.55),
+    0 0 32px rgba(0, 255, 220, 0.45),
+    0 10px 26px rgba(0, 0, 0, 0.55);
+}
+
+.btn-bottle-boost:active:not(:disabled) {
+  transform: translateX(-50%) scale(0.98);
+}
+
+.btn-bottle-boost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(0.35) brightness(0.92);
+}
+
+.btn-bottle-boost[hidden] {
+  display: none !important;
+}
+
+.btn-bottle-boost__icon {
+  display: block;
+  line-height: 0;
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.45));
+}
+
+.btn-bottle-boost__svg {
+  display: block;
+  vertical-align: middle;
+}
+
+.btn-bottle-boost__count {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  min-width: 1.35em;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: #0a0a0a;
+  background: linear-gradient(180deg, #fff8e8, #ffd080);
+  border: 2px solid #0a0a0a;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset;
+}
+
 .mystery-flip-hud {
   pointer-events: none;
   align-self: stretch;

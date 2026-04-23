@@ -95,12 +95,76 @@
         </div>
         <p class="syserr-detail" id="syserr-detail">CONTROL BUS SIGNATURE DRIFT</p>
         <p class="syserr-count" id="syserr-count">PROTOCOL LOCK IN — 1.0s</p>
-        <p class="syserr-foot">DO NOT TRUST MUSCLE MEMORY · AWAIT REM</p>
+        <p class="syserr-foot" id="syserr-foot">DO NOT TRUST MUSCLE MEMORY · AWAIT REM</p>
       </div>
     </div>
     <div id="c-wrap" aria-hidden="true" tabindex="-1">
       <canvas id="c"></canvas>
     </div>
+    <button type="button" id="btn-bottle-boost" class="btn-bottle-boost" hidden>
+      <span class="btn-bottle-boost__icon" aria-hidden="true">
+        <svg class="btn-bottle-boost__svg" viewBox="0 0 72 92" width="54" height="69" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <clipPath id="bb-liquid-clip">
+              <path
+                d="M 28 16 L 44 16 L 46 20 L 46 32 C 46 40 56 48 58 58 A 22 22 0 0 1 14 58 C 16 48 26 40 26 32 L 26 20 L 28 16 Z"
+              />
+            </clipPath>
+            <linearGradient id="bb-blue" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#5cf0ff" />
+              <stop offset="55%" stop-color="#38c4ff" />
+              <stop offset="100%" stop-color="#1490dc" />
+            </linearGradient>
+            <linearGradient id="bb-pink" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stop-color="#ff5bd4" />
+              <stop offset="50%" stop-color="#ff2eb8" />
+              <stop offset="100%" stop-color="#c0107a" />
+            </linearGradient>
+          </defs>
+          <!-- Cork (above rim) -->
+          <path
+            d="M 29 5 L 43 5 L 44.5 14 L 27.5 14 Z"
+            fill="#9d6438"
+            stroke="#0a0a0a"
+            stroke-width="2.1"
+            stroke-linejoin="round"
+          />
+          <circle cx="33.5" cy="8.5" r="1" fill="#2a1810" />
+          <circle cx="38.5" cy="9.5" r="0.9" fill="#2a1810" />
+          <circle cx="35.5" cy="11.5" r="0.75" fill="#2a1810" />
+          <!-- Liquids -->
+          <g clip-path="url(#bb-liquid-clip)">
+            <path
+              d="M 12 90 L 60 90 L 60 56 C 52 48 46 56 36 52 C 26 48 20 48 12 56 Z"
+              fill="url(#bb-pink)"
+            />
+            <path
+              d="M 12 56 C 20 48 26 48 36 52 C 46 56 52 48 60 56 L 60 18 L 12 18 Z"
+              fill="url(#bb-blue)"
+            />
+            <ellipse cx="22" cy="64" rx="6" ry="12" fill="rgba(255,255,255,0.5)" transform="rotate(-28 22 64)" />
+            <ellipse cx="24" cy="30" rx="4" ry="6.5" fill="rgba(255,255,255,0.42)" transform="rotate(-22 24 30)" />
+          </g>
+          <!-- Thick bottle outline -->
+          <path
+            d="M 28 16 L 44 16 L 46 20 L 46 32 C 46 40 56 48 58 58 A 22 22 0 0 1 14 58 C 16 48 26 40 26 32 L 26 20 L 28 16 Z"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="2.85"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M 27.5 14 L 29 5 L 43 5 L 44.5 14"
+            fill="none"
+            stroke="#0a0a0a"
+            stroke-width="2.85"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </span>
+      <span id="bottle-boost-inv-count" class="btn-bottle-boost__count">0</span>
+    </button>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
