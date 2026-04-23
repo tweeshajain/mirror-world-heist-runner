@@ -33,7 +33,7 @@ const MAX_SPEED_MILESTONES = 14;
 const MIRROR_CYCLE_MS = 15000;
 const MIRROR_WARN_MS = 1000;
 const STARTING_LIVES = 3;
-/** After Mirror Reality fires, obstacle hits do not cost lives (ms). */
+/** After Mirror Reality fires (system error banner ends), obstacle hits do not cost lives (ms). */
 const MIRROR_PROTOCOL_IMMUNITY_MS = 2000;
 /** Non-fatal hit: freeze sim + input while the mirror-shatter beat plays (ms). */
 const LIFE_LOST_FREEZE_MS = 1000;
@@ -794,6 +794,13 @@ export class Game {
     const now = performance.now();
     if (now < this.mirrorWarningStartAt || now >= this.mirrorNextFireAt) return 0;
     return Math.max(0, (this.mirrorNextFireAt - now) / 1000);
+  }
+
+  /** Full-screen “SYSTEM ERROR” telegraph: same wall-clock window as the pre-flip HUD banner. */
+  private isMirrorSystemErrorTelegraphImmuneAt(now: number): boolean {
+    if (!this.running || this.gameOver || this.userPaused) return false;
+    if (this.mirrorNextFireAt <= 0) return false;
+    return now >= this.mirrorWarningStartAt && now < this.mirrorNextFireAt;
   }
 
   /** 0–1: mirror flip glitch transition (decaying). */
@@ -2560,6 +2567,7 @@ export class Game {
     o.hit = true;
     const nowHit = performance.now();
     if (
+      this.isMirrorSystemErrorTelegraphImmuneAt(nowHit) ||
       nowHit < this.mirrorProtocolImmunityUntil ||
       nowHit < this.jetpackPostImmunityUntil ||
       nowHit < this.mysteryFlipImmunityUntil ||
