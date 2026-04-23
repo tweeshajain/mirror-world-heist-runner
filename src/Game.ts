@@ -120,9 +120,25 @@ const FLOAT_REALM_MISS_RETRY_MIN_MS = 14000;
 const FLOAT_REALM_MISS_RETRY_MAX_MS = 22000;
 const FLOAT_REALM_POST_IMMUNITY_MS = 2000;
 const FLOAT_REALM_ENTRY_IMMUNITY_MS = 2000;
+/** After the first float realm ends, schedule the second ring after this delay (ms). */
+const FLOAT_REALM_SECOND_RING_DELAY_MIN_MS = 9000;
+const FLOAT_REALM_SECOND_RING_DELAY_MAX_MS = 16000;
+/** Max float-realm entries per run (first ring + one encore ring). */
+const FLOAT_REALM_MAX_ENTRIES_PER_RUN = 2;
+/** Second visit: slow horizontal weave between lanes (rad/ms on sin phase). */
+const FLOAT_REALM_LANE_DRIFT_OMEGA = 0.00048;
+/** Second visit: sin amplitude in lane-width units (obstacles drift across adjacent lanes). */
+const FLOAT_REALM_LANE_DRIFT_AMP = 0.92;
+/** Second visit: wider gap between obstacle spawns (multiplier). */
+const FLOAT_REALM_SECOND_OBSTACLE_SPACING_MUL = 1.72;
+/** Second visit: run speed multiplier so hazards approach more slowly. */
+const FLOAT_REALM_SECOND_RUN_SPEED_MUL = 0.68;
 
-/** Floor-score gates: a bottle boost pickup is scheduled a few seconds after each (once per gate per run). */
-const BOTTLE_BOOST_SCORE_GATES = [3000, 8000] as const;
+/**
+ * Two bottles per run, one per gate: gate 1 does not open until floor score ≥ 12k, so only one track bottle
+ * can appear before that score (the first gate, from 3k). One more bottle can appear after 12k.
+ */
+const BOTTLE_BOOST_SCORE_GATES = [3000, 12000] as const;
 const BOTTLE_BOOST_SPAWN_DELAY_MIN_MS = 2200;
 const BOTTLE_BOOST_SPAWN_DELAY_MAX_MS = 4200;
 const BOTTLE_BOOST_DURATION_MS = 4000;
@@ -405,9 +421,13 @@ export class Game {
   private mysteryDoorEntryImmunityUntil = 0;
 
   private floatRealmSpawnAtMs = 0;
-  /** True after the 7s float realm finishes (entered once) or run ends. */
+  /** True after both float-realm beats finish (or run reset); false while a ring can still spawn. */
   private floatRealmWaveComplete = false;
   private floatRealmPickupSpawnsThisRun = 0;
+  /** Float-realm beats completed this run (0 → first exit → 1 → second exit → 2). */
+  private floatRealmCompletionsThisRun = 0;
+  /** Second float-realm beat: hazards drift slowly across lanes; run pacing eased. */
+  private floatRealmLaneDriftActive = false;
   private floatRealmPickup: FloatRealmPickup | null = null;
   private floatRealmModeUntil = 0;
   private floatRealmModeStartMs = 0;
@@ -727,7 +747,10 @@ export class Game {
     const now = performance.now();
     if (this.isFloatRealmMode()) {
       const s = Math.max(0, (this.floatRealmModeUntil - now) / 1000);
-      return `FLOAT REALM — ${s.toFixed(1)}s · hazards drifting`;
+      const sub = this.floatRealmLaneDriftActive
+        ? "slow lanes · wide spacing"
+        : "hazards drifting";
+      return `FLOAT REALM — ${s.toFixed(1)}s · ${sub}`;
     }
     return "";
   }
@@ -889,6 +912,8 @@ export class Game {
     this.floatRealmSpawnAtMs = 0;
     this.floatRealmWaveComplete = false;
     this.floatRealmPickupSpawnsThisRun = 0;
+    this.floatRealmCompletionsThisRun = 0;
+    this.floatRealmLaneDriftActive = false;
     this.floatRealmModeUntil = 0;
     this.floatRealmModeStartMs = 0;
     this.floatRealmPostImmunityUntil = 0;
@@ -2546,10 +2571,14 @@ export class Game {
   }
 
   private enterFloatRealmFromRing(now: number): void {
+    this.floatRealmLaneDriftActive = this.floatRealmCompletionsThisRun >= 1;
     this.floatRealmModeStartMs = now;
     this.floatRealmModeUntil = now + FLOAT_REALM_MODE_DURATION_MS;
     this.floatRealmEntryImmunityUntil = now + FLOAT_REALM_ENTRY_IMMUNITY_MS;
     this.applyFloatRealmWorldVisuals();
+    if (this.floatRealmLaneDriftActive) {
+      this.announce("ENCORE RING · hazards sliding lanes · slow pace", 2600);
+    }
   }
 
   private checkFloatRealmPickup(): void {
@@ -2649,6 +2678,12 @@ export class Game {
 
   private resetObstacleMeshesAfterFloatRealm(): void {
     for (const o of this.obstacles) {
+      const snapped = THREE.MathUtils.clamp(
+        Math.round(o.mesh.position.x / LANE_WIDTH),
+        -1,
+        1,
+      );
+      o.lane = snapped;
       o.mesh.position.y = 0;
       o.mesh.position.x = o.lane * LANE_WIDTH;
     }
@@ -2664,10 +2699,20 @@ export class Game {
         seed = Math.random() * Math.PI * 2;
         o.mesh.userData.floatSeed = seed;
       }
-      const bob = 0.52 + Math.sin(elapsed * 0.0033 + seed) * 0.92;
-      const sway = Math.sin(elapsed * 0.0025 + seed * 1.63) * 0.48;
-      o.mesh.position.y = bob;
-      o.mesh.position.x = o.lane * LANE_WIDTH + sway;
+      if (this.floatRealmLaneDriftActive) {
+        const bob = 0.48 + Math.sin(elapsed * 0.0028 + seed) * 0.62;
+        const laneSlide =
+          Math.sin(elapsed * FLOAT_REALM_LANE_DRIFT_OMEGA + seed * 1.37) *
+          LANE_WIDTH *
+          FLOAT_REALM_LANE_DRIFT_AMP;
+        o.mesh.position.y = bob;
+        o.mesh.position.x = o.lane * LANE_WIDTH + laneSlide;
+      } else {
+        const bob = 0.52 + Math.sin(elapsed * 0.0033 + seed) * 0.92;
+        const sway = Math.sin(elapsed * 0.0025 + seed * 1.63) * 0.48;
+        o.mesh.position.y = bob;
+        o.mesh.position.x = o.lane * LANE_WIDTH + sway;
+      }
     }
   }
 
@@ -2675,8 +2720,8 @@ export class Game {
     this.floatRealmModeUntil = 0;
     this.floatRealmModeStartMs = 0;
     this.floatRealmEntryImmunityUntil = 0;
+    this.floatRealmLaneDriftActive = false;
     this.floatRealmSpawnAtMs = 0;
-    this.floatRealmWaveComplete = true;
     document.body.classList.remove("float-realm-mode");
     this.resetObstacleMeshesAfterFloatRealm();
     for (const o of this.obstacles) {
@@ -2685,6 +2730,14 @@ export class Game {
     this.applyVisualLayer(this.mirrorLayer);
     this.floatRealmPostImmunityUntil = now + FLOAT_REALM_POST_IMMUNITY_MS;
     this.announce("PATH SEALED · hazards grounded · 2s immunity", 2800);
+
+    this.floatRealmCompletionsThisRun += 1;
+    if (this.floatRealmCompletionsThisRun < FLOAT_REALM_MAX_ENTRIES_PER_RUN) {
+      this.floatRealmWaveComplete = false;
+      this.floatRealmSpawnAtMs = now + randRange(FLOAT_REALM_SECOND_RING_DELAY_MIN_MS, FLOAT_REALM_SECOND_RING_DELAY_MAX_MS);
+    } else {
+      this.floatRealmWaveComplete = true;
+    }
   }
 
   private spawnExtraLifePickup(): void {
@@ -3273,6 +3326,12 @@ export class Game {
         vMin = Math.max(vMin, BOTTLE_BOOST_VMIN_FLOOR);
         accel = Math.max(accel, 2.45);
       }
+      if (this.isFloatRealmMode() && this.floatRealmLaneDriftActive) {
+        targetV *= FLOAT_REALM_SECOND_RUN_SPEED_MUL;
+        vmax *= 0.86;
+        vMin *= 0.9;
+        accel = Math.max(accel * 0.88, 1.22);
+      }
       this.velocityZ += (targetV - this.velocityZ) * Math.min(1, dt * accel);
       this.velocityZ = THREE.MathUtils.clamp(this.velocityZ, vMin, vmax);
 
@@ -3335,10 +3394,13 @@ export class Game {
       const baseSpacing =
         THREE.MathUtils.lerp(OBSTACLE_SPACING_BASE_START, OBSTACLE_SPACING_BASE_END, timeT) +
         randRange(-0.65, 1.35);
-      const spacing = Math.max(
+      let spacing = Math.max(
         OBSTACLE_SPACING_MIN,
         baseSpacing - scoreTiers * OBSTACLE_TIGHTEN_PER_SCORE_TIER,
       );
+      if (this.isFloatRealmMode() && this.floatRealmLaneDriftActive) {
+        spacing *= FLOAT_REALM_SECOND_OBSTACLE_SPACING_MUL;
+      }
       if (this.distance >= this.nextObstacleAt) {
         this.spawnObstacle();
         this.nextObstacleAt += spacing;
@@ -3652,6 +3714,8 @@ export class Game {
     this.floatRealmSpawnAtMs = 0;
     this.floatRealmWaveComplete = false;
     this.floatRealmPickupSpawnsThisRun = 0;
+    this.floatRealmCompletionsThisRun = 0;
+    this.floatRealmLaneDriftActive = false;
     this.floatRealmModeUntil = 0;
     this.floatRealmModeStartMs = 0;
     this.floatRealmPostImmunityUntil = 0;
