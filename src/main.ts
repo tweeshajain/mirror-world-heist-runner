@@ -65,6 +65,8 @@ let prevNearMiss = 0;
 let prevLifeLostFrozen = false;
 /** Bumped when a new run starts so late leaderboard responses do not paint over a fresh game. */
 let leaderboardSession = 0;
+/** Invalidates an in-flight game-over leaderboard fetch when the player leaves the game-over screen. */
+let gameOverLeaderboardToken = 0;
 let gameOverLeaderboardRequested = false;
 
 function persistPlayerName(): void {
@@ -86,7 +88,11 @@ loadPlayerName();
 playerNameInput.addEventListener("change", persistPlayerName);
 playerNameInput.addEventListener("blur", persistPlayerName);
 
-async function populateGameOverLeaderboard(score: number, session: number): Promise<void> {
+function isGameOverLeaderboardStale(token: number): boolean {
+  return token !== gameOverLeaderboardToken;
+}
+
+async function populateGameOverLeaderboard(score: number, token: number): Promise<void> {
   leaderboardErr.hidden = true;
   leaderboardErr.textContent = "";
   yourRank.hidden = true;
@@ -95,48 +101,56 @@ async function populateGameOverLeaderboard(score: number, session: number): Prom
   top5List.innerHTML = "";
   leaderboardSetupHint.hidden = true;
   leaderboardSetupHint.textContent = "";
-
-  const client = await resolveSupabaseClient();
-  if (session !== leaderboardSession) return;
-
-  if (!client) {
-    leaderboardStatus.hidden = false;
-    leaderboardStatus.textContent =
-      "We could not load the online leaderboard, so your rank and top scores are unavailable.";
-    leaderboardSetupHint.hidden = false;
-    leaderboardSetupHint.textContent = import.meta.env.DEV
-      ? "Fix: put URL + key in .env.local and restart npm run dev, OR copy public/supabase-config.example.json to public/supabase-config.json with your real values. Open the browser devtools console for details."
-      : "If you are playing a downloaded or hosted build, the game needs Supabase settings at build time, or a supabase-config.json file next to the site.";
-    return;
-  }
-
   leaderboardStatus.hidden = false;
   leaderboardStatus.textContent = "Saving score and loading ranks…";
 
-  const res = await saveRunAndGetLeaderboardSummary(getDisplayName(), score);
-  if (session !== leaderboardSession) return;
+  try {
+    const client = await resolveSupabaseClient();
+    if (isGameOverLeaderboardStale(token)) return;
 
-  if (!res.ok) {
+    if (!client) {
+      leaderboardStatus.textContent =
+        "We could not load the online leaderboard, so your rank and top scores are unavailable.";
+      leaderboardSetupHint.hidden = false;
+      leaderboardSetupHint.textContent = import.meta.env.DEV
+        ? "Fix: put URL + key in .env.local and restart npm run dev, OR copy public/supabase-config.json to public/supabase-config.json with your real values."
+        : "Add Supabase URL + key at build time, or place supabase-config.json next to the site (see public/supabase-config.example.json).";
+      return;
+    }
+
+    const res = await saveRunAndGetLeaderboardSummary(getDisplayName(), score);
+    if (isGameOverLeaderboardStale(token)) return;
+
+    if (!res.ok) {
+      leaderboardStatus.textContent = "";
+      leaderboardErr.hidden = false;
+      leaderboardErr.textContent = res.message;
+      return;
+    }
+
+    leaderboardStatus.hidden = true;
+    leaderboardStatus.textContent = "";
+    yourRank.hidden = false;
+    yourRank.textContent = `Your rank: #${res.rank.toLocaleString()}`;
+    top5Heading.hidden = false;
+    top5List.hidden = false;
+    for (const row of res.top5) {
+      const li = document.createElement("li");
+      li.textContent = `${row.player_name} — ${row.score.toLocaleString()}`;
+      top5List.appendChild(li);
+    }
+    if (res.top5.length === 0) {
+      const li = document.createElement("li");
+      li.textContent = "(No scores in the table yet)";
+      top5List.appendChild(li);
+    }
+  } catch (err) {
+    if (isGameOverLeaderboardStale(token)) return;
     leaderboardStatus.textContent = "";
     leaderboardErr.hidden = false;
-    leaderboardErr.textContent = res.message;
-    return;
-  }
-
-  leaderboardStatus.textContent = "";
-  yourRank.hidden = false;
-  yourRank.textContent = `Your rank: #${res.rank.toLocaleString()}`;
-  top5Heading.hidden = false;
-  top5List.hidden = false;
-  for (const row of res.top5) {
-    const li = document.createElement("li");
-    li.textContent = `${row.player_name} — ${row.score.toLocaleString()}`;
-    top5List.appendChild(li);
-  }
-  if (res.top5.length === 0) {
-    const li = document.createElement("li");
-    li.textContent = "(No scores in the table yet)";
-    top5List.appendChild(li);
+    leaderboardErr.textContent =
+      err instanceof Error ? err.message : "Could not load the leaderboard.";
+    console.error("[leaderboard]", err);
   }
 }
 
@@ -414,6 +428,7 @@ function applyScreenVfx(): void {
 
 function focusPlaySurface(): void {
   leaderboardSession += 1;
+  gameOverLeaderboardToken += 1;
   gameOverLeaderboardRequested = false;
   persistPlayerName();
   game.start();
@@ -459,13 +474,16 @@ function tick(): void {
     finalScore.textContent = String(game.getScore());
     if (!gameOverLeaderboardRequested) {
       gameOverLeaderboardRequested = true;
-      const session = leaderboardSession;
-      void populateGameOverLeaderboard(game.getScore(), session);
+      gameOverLeaderboardToken += 1;
+      const token = gameOverLeaderboardToken;
+      void populateGameOverLeaderboard(game.getScore(), token);
     }
   } else if (!over) {
     gameOverLeaderboardRequested = false;
   }
   requestAnimationFrame(tick);
 }
+
+void resolveSupabaseClient();
 
 requestAnimationFrame(tick);
